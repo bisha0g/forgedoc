@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <PackageId>ForgeDoc</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Ahmed Khalifa</Authors>
+    <Description>Your package description</Description>
+    <PackageTags>openxml;extension;package;manifest</PackageTags>
+    <!-- <PackageProjectUrl>https://github.com/ahmdrz/ForgeDoc</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/ahmdrz/ForgeDoc</RepositoryUrl> -->
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>
