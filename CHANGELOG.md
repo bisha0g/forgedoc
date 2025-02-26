@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.1] - 2024-03-21
+
+### Added
+- Improved table search functionality in Word documents
+- Table formatting preservation when replacing content
+
 ## [1.1.0] - 2024-03-21
 
 ### Added
