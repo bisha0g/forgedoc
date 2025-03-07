@@ -131,47 +131,89 @@ public class WordTemplateProcessor
 
     private void ReplaceLoop(Body body, string listVariable, List<Dictionary<string, string>> values)
     {
-        throw new NotImplementedException();
         var paragraphs = body.Descendants<Paragraph>().ToList();
+        
+        // Find loop start and end markers
         for (int i = 0; i < paragraphs.Count; i++)
         {
-            var paragraphText = paragraphs[i].InnerText;
-            if (paragraphText.Contains("{%for") && paragraphText.Contains("in"))
+            var startParagraph = paragraphs[i];
+            var startText = startParagraph.InnerText;
+            
+            // Check if this paragraph contains a loop start marker
+            if (startText.Contains($"{{%for ") && startText.Contains($" in {listVariable}%}}"))
             {
-                var parts = paragraphText.Split(new[] { "{%for ", " in ", "%}" }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 2)
+                // Extract the item variable name
+                int forIndex = startText.IndexOf("{%for ") + 6;
+                int inIndex = startText.IndexOf(" in ");
+                if (inIndex > forIndex)
                 {
-                    string itemVariable = parts[0].Trim();
-                    string listName = parts[1].Trim();
-
-                    if (listName == listVariable)
+                    string itemVariable = startText.Substring(forIndex, inIndex - forIndex).Trim();
+                    
+                    // Find the end of the loop
+                    int endIndex = -1;
+                    for (int j = i + 1; j < paragraphs.Count; j++)
                     {
-                        var startIndex = i;
-                        while (i < paragraphs.Count && !paragraphs[i].InnerText.Contains("{%endfor%}"))
+                        if (paragraphs[j].InnerText.Contains("{%endfor%}"))
                         {
-                            i++;
+                            endIndex = j;
+                            break;
                         }
-                        var endIndex = i;
-                        var loopTemplate = paragraphs.Skip(startIndex + 1).Take(endIndex - startIndex - 1).ToList();
-
-                        var parent = paragraphs[startIndex].Parent;
-                        for (int j = startIndex; j <= endIndex; j++)
+                    }
+                    
+                    if (endIndex > i)
+                    {
+                        // Get the parent element that contains the paragraphs
+                        var parent = startParagraph.Parent;
+                        
+                        // Store the template paragraphs (between start and end markers)
+                        var templateParagraphs = new List<Paragraph>();
+                        for (int j = i + 1; j < endIndex; j++)
                         {
-                            parent.RemoveChild(paragraphs[j]);
+                            templateParagraphs.Add((Paragraph)paragraphs[j].CloneNode(true));
                         }
-
+                        
+                        // Remove the original loop paragraphs (including start and end markers)
+                        for (int j = endIndex; j >= i; j--)
+                        {
+                            paragraphs[j].Remove();
+                        }
+                        
+                        // Insert new paragraphs for each item in the list
+                        int insertPosition = i;
                         foreach (var item in values)
                         {
-                            foreach (var templateParagraph in loopTemplate)
+                            foreach (var templateParagraph in templateParagraphs)
                             {
                                 var newParagraph = (Paragraph)templateParagraph.CloneNode(true);
+                                
+                                // Replace placeholders in the paragraph
                                 foreach (var kvp in item)
                                 {
-                                    ReplaceText(newParagraph, $"{{{{{itemVariable}.{kvp.Key}}}}}", kvp.Value);
+                                    string placeholder = $"{{{{{itemVariable}.{kvp.Key}}}}}";
+                                    ReplaceText(newParagraph, placeholder, kvp.Value);
                                 }
-                                parent.AppendChild(newParagraph);
+                                
+                                // Insert the new paragraph
+                                if (insertPosition == i)
+                                {
+                                    // Insert at the position of the start marker
+                                    parent.InsertAt(newParagraph, insertPosition);
+                                }
+                                else
+                                {
+                                    // Insert after the last inserted paragraph
+                                    var lastParagraph = parent.Elements<Paragraph>().ElementAt(insertPosition);
+                                    parent.InsertAfter(newParagraph, lastParagraph);
+                                }
+                                insertPosition++;
                             }
                         }
+                        
+                        // Update the paragraphs list since we've modified the document
+                        paragraphs = body.Descendants<Paragraph>().ToList();
+                        
+                        // Adjust the index to continue processing after the newly inserted paragraphs
+                        i = insertPosition - 1;
                     }
                 }
             }
@@ -180,6 +222,7 @@ public class WordTemplateProcessor
 
     private void ReplaceTable(Body body, string tableVariable, List<Dictionary<string, string>> tableData)
     {
+        // First try to find tables with the marker in a paragraph before the table
         var paragraphs = body.Descendants<Paragraph>().ToList();
         for (int i = 0; i < paragraphs.Count; i++)
         {
@@ -220,49 +263,112 @@ public class WordTemplateProcessor
                     // Remove the table marker paragraph
                     paragraphs[i].Remove();
                     
-                    // Get the template row and its properties
-                    var templateRow = table.Elements<TableRow>().FirstOrDefault();
-                    if (templateRow != null)
-                    {
-                        // Store the template cells for formatting reference
-                        var templateCells = templateRow.Elements<TableCell>().ToList();
-                        
-                        // Remove the template row
-                        table.RemoveChild(templateRow);
-
-                        // Create rows for each data item
-                        foreach (var rowData in tableData)
-                        {
-                            var newRow = new TableRow();
-                            
-                            // Use template cells as reference for formatting
-                            for (int cellIndex = 0; cellIndex < templateCells.Count && cellIndex < rowData.Count; cellIndex++)
-                            {
-                                var templateCell = templateCells[cellIndex];
-                                var cellValue = rowData.ElementAt(cellIndex).Value;
-
-                                // Clone the template cell to preserve formatting
-                                var newCell = (TableCell)templateCell.CloneNode(true);
-                                
-                                // Clear existing paragraphs in the cloned cell
-                                newCell.RemoveAllChildren<Paragraph>();
-                                
-                                // Add new paragraph with the data
-                                var paragraph = new Paragraph(
-                                    new Run(
-                                        new Text(cellValue)
-                                    )
-                                );
-                                
-                                newCell.Append(paragraph);
-                                newRow.Append(newCell);
-                            }
-                            
-                            table.Append(newRow);
-                        }
-                    }
+                    // Process the table
+                    ProcessTableData(table, tableData);
+                    return; // Table found and processed
                 }
             }
         }
+        
+        // If we get here, we didn't find the marker in a paragraph before a table
+        // Now look for tables that have the marker inside a cell
+        var tables = body.Descendants<Table>().ToList();
+        foreach (var table in tables)
+        {
+            bool markerFound = false;
+            
+            // Check if any cell contains our marker
+            foreach (var cell in table.Descendants<TableCell>())
+            {
+                if (cell.InnerText.Contains($"{{{{#{tableVariable}}}}}"))
+                {
+                    markerFound = true;
+                    break;
+                }
+            }
+            
+            if (markerFound)
+            {
+                // Process the table
+                ProcessTableData(table, tableData);
+                break;
+            }
+        }
+    }
+    
+    private void ProcessTableData(Table table, List<Dictionary<string, string>> tableData)
+    {
+        // Get all rows in the table
+        var rows = table.Elements<TableRow>().ToList();
+        
+        // We need at least one row as a template
+        if (rows.Count == 0)
+            return;
+            
+        // Store the template row (first row)
+        var templateRow = rows[0];
+        
+        // Get the template cells
+        var templateCells = templateRow.Elements<TableCell>().ToList();
+        
+        // Check if we have a table marker in the first cell
+        bool hasTableMarker = false;
+        string firstCellText = templateCells.FirstOrDefault()?.InnerText ?? string.Empty;
+        if (firstCellText.Contains("{{#") && firstCellText.Contains("}}"))
+        {
+            hasTableMarker = true;
+        }
+        
+        // Remove all existing rows
+        while (table.Elements<TableRow>().Any())
+        {
+            table.RemoveChild(table.Elements<TableRow>().First());
+        }
+        
+        // Create header row with column names
+        var headerRow = new TableRow();
+        foreach (var key in tableData.FirstOrDefault()?.Keys ?? new Dictionary<string, string>().Keys)
+        {
+            var headerCell = new TableCell(new Paragraph(new Run(new Text(key))));
+            headerRow.AppendChild(headerCell);
+        }
+        table.AppendChild(headerRow);
+        
+        // Create rows for each data item
+        foreach (var rowData in tableData)
+        {
+            var newRow = new TableRow();
+            
+            // Create cells for each key in the dictionary
+            foreach (var key in rowData.Keys)
+            {
+                var cellValue = rowData[key];
+                var newCell = new TableCell();
+                UpdateCellContent(newCell, cellValue);
+                newRow.AppendChild(newCell);
+            }
+            
+            table.AppendChild(newRow);
+        }
+    }
+    
+    private void UpdateCellContent(TableCell cell, string newContent)
+    {
+        // Get the first paragraph or create one if none exists
+        var paragraph = cell.Elements<Paragraph>().FirstOrDefault();
+        if (paragraph == null)
+        {
+            paragraph = new Paragraph();
+            cell.AppendChild(paragraph);
+        }
+        else
+        {
+            // Clear existing content but keep the paragraph
+            paragraph.RemoveAllChildren();
+        }
+        
+        // Create a new run with the content
+        var run = new Run(new Text(newContent));
+        paragraph.AppendChild(run);
     }
 }
