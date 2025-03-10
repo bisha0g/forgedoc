@@ -306,7 +306,7 @@ public class WordTemplateProcessor
             return;
             
         // Store the template row (first row)
-        var templateRow = rows[0];
+        var templateRow = (TableRow)rows[0].CloneNode(true);
         
         // Get the template cells
         var templateCells = templateRow.Elements<TableCell>().ToList();
@@ -319,33 +319,90 @@ public class WordTemplateProcessor
             hasTableMarker = true;
         }
         
-        // Remove all existing rows
+        // Store table properties before clearing rows
+        var tableProperties = table.GetFirstChild<TableProperties>()?.CloneNode(true);
+        
+        // Remove all existing rows but preserve table properties
         while (table.Elements<TableRow>().Any())
         {
             table.RemoveChild(table.Elements<TableRow>().First());
         }
         
-        // Create header row with column names
-        var headerRow = new TableRow();
-        foreach (var key in tableData.FirstOrDefault()?.Keys ?? new Dictionary<string, string>().Keys)
+        // Re-add table properties if they existed
+        if (tableProperties != null)
         {
-            var headerCell = new TableCell(new Paragraph(new Run(new Text(key))));
-            headerRow.AppendChild(headerCell);
+            table.PrependChild(tableProperties);
         }
-        table.AppendChild(headerRow);
+        
+        // Create header row with column names if we have data
+        if (tableData.Count > 0)
+        {
+            // Use the template row structure for the header if available
+            var headerRow = (TableRow)templateRow.CloneNode(true);
+            var headerCells = headerRow.Elements<TableCell>().ToList();
+            
+            // Clear the content of header cells and add column names
+            var keys = tableData.First().Keys.ToList();
+            for (int i = 0; i < keys.Count; i++)
+            {
+                if (i < headerCells.Count)
+                {
+                    // Update existing cell with header text
+                    UpdateCellContent(headerCells[i], keys[i]);
+                }
+                else
+                {
+                    // If we need more cells than template provides, create new ones
+                    var newCell = new TableCell();
+                    UpdateCellContent(newCell, keys[i]);
+                    headerRow.AppendChild(newCell);
+                }
+            }
+            
+            // Remove any extra cells
+            while (headerCells.Count > keys.Count)
+            {
+                headerCells.Last().Remove();
+                headerCells.RemoveAt(headerCells.Count - 1);
+            }
+            
+            table.AppendChild(headerRow);
+        }
         
         // Create rows for each data item
         foreach (var rowData in tableData)
         {
-            var newRow = new TableRow();
+            // Clone the template row to preserve styling
+            var newRow = (TableRow)templateRow.CloneNode(true);
+            var cells = newRow.Elements<TableCell>().ToList();
             
-            // Create cells for each key in the dictionary
-            foreach (var key in rowData.Keys)
+            // Get the keys in order
+            var keys = rowData.Keys.ToList();
+            
+            // Update cells with data
+            for (int i = 0; i < keys.Count; i++)
             {
-                var cellValue = rowData[key];
-                var newCell = new TableCell();
-                UpdateCellContent(newCell, cellValue);
-                newRow.AppendChild(newCell);
+                var cellValue = rowData[keys[i]];
+                
+                if (i < cells.Count)
+                {
+                    // Update existing cell
+                    UpdateCellContent(cells[i], cellValue);
+                }
+                else
+                {
+                    // If we need more cells than template provides, create new ones
+                    var newCell = new TableCell();
+                    UpdateCellContent(newCell, cellValue);
+                    newRow.AppendChild(newCell);
+                }
+            }
+            
+            // Remove any extra cells
+            while (cells.Count > keys.Count)
+            {
+                cells.Last().Remove();
+                cells.RemoveAt(cells.Count - 1);
             }
             
             table.AppendChild(newRow);
