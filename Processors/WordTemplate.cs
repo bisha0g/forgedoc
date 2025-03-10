@@ -222,15 +222,41 @@ public class WordTemplateProcessor
 
     private void ReplaceTable(Body body, string tableVariable, List<Dictionary<string, string>> tableData)
     {
-        // First try to find tables with the marker in a paragraph before the table
-        var paragraphs = body.Descendants<Paragraph>().ToList();
-        for (int i = 0; i < paragraphs.Count; i++)
+        // Find tables with docTable markers
+        var tables = body.Descendants<Table>().ToList();
+        foreach (var table in tables)
         {
-            var paragraphText = paragraphs[i].InnerText;
-            if (paragraphText.Contains($"{{{{#{tableVariable}}}}}"))
+            // Check if any cell contains our docTable marker
+            bool markerFound = false;
+            foreach (var cell in table.Descendants<TableCell>())
+            {
+                var paragraphs = cell.Descendants<Paragraph>().ToList();
+                foreach (var paragraph in paragraphs)
+                {
+                    var text = paragraph.InnerText;
+                    if (text.Contains($"{{{{#docTable {tableVariable}}}}}"))
+                    {
+                        // Process the table with the marker
+                        ProcessTableData(table, tableVariable, tableData);
+                        markerFound = true;
+                        break;
+                    }
+                }
+                if (markerFound) break;
+            }
+            if (markerFound) return;
+        }
+        
+        // If we get here, we didn't find the marker inside a table cell
+        // Now look for the marker in paragraphs before tables
+        var allParagraphs = body.Descendants<Paragraph>().ToList();
+        for (int i = 0; i < allParagraphs.Count; i++)
+        {
+            var paragraphText = allParagraphs[i].InnerText;
+            if (paragraphText.Contains($"{{{{#docTable {tableVariable}}}}}"))
             {
                 // Find the associated table by looking at subsequent elements
-                var currentElement = paragraphs[i];
+                var currentElement = allParagraphs[i];
                 Table? table = null;
                 
                 // First try to find table as a sibling
@@ -261,42 +287,17 @@ public class WordTemplateProcessor
                 if (table != null)
                 {
                     // Remove the table marker paragraph
-                    paragraphs[i].Remove();
+                    allParagraphs[i].Remove();
                     
                     // Process the table
-                    ProcessTableData(table, tableData);
+                    ProcessTableData(table, tableVariable, tableData);
                     return; // Table found and processed
                 }
             }
         }
-        
-        // If we get here, we didn't find the marker in a paragraph before a table
-        // Now look for tables that have the marker inside a cell
-        var tables = body.Descendants<Table>().ToList();
-        foreach (var table in tables)
-        {
-            bool markerFound = false;
-            
-            // Check if any cell contains our marker
-            foreach (var cell in table.Descendants<TableCell>())
-            {
-                if (cell.InnerText.Contains($"{{{{#{tableVariable}}}}}"))
-                {
-                    markerFound = true;
-                    break;
-                }
-            }
-            
-            if (markerFound)
-            {
-                // Process the table
-                ProcessTableData(table, tableData);
-                break;
-            }
-        }
     }
     
-    private void ProcessTableData(Table table, List<Dictionary<string, string>> tableData)
+    private void ProcessTableData(Table table, string tableVariable, List<Dictionary<string, string>> tableData)
     {
         // Get all rows in the table
         var rows = table.Elements<TableRow>().ToList();
@@ -305,127 +306,217 @@ public class WordTemplateProcessor
         if (rows.Count == 0)
             return;
             
-        // Store the template row (first row)
-        var templateRow = (TableRow)rows[0].CloneNode(true);
+        // Find the template row and end marker row
+        TableRow? templateRow = null;
+        int templateRowIndex = -1;
+        int endMarkerRowIndex = -1;
         
-        // Get the template cells
-        var templateCells = templateRow.Elements<TableCell>().ToList();
-        
-        // Check if we have a table marker in the first cell
-        bool hasTableMarker = false;
-        string firstCellText = templateCells.FirstOrDefault()?.InnerText ?? string.Empty;
-        if (firstCellText.Contains("{{#") && firstCellText.Contains("}}"))
+        for (int i = 0; i < rows.Count; i++)
         {
-            hasTableMarker = true;
+            var rowText = rows[i].InnerText;
+            
+            // Check for template row with docTable marker
+            if (rowText.Contains($"{{{{#docTable {tableVariable}}}}}"))
+            {
+                templateRow = rows[i];
+                templateRowIndex = i;
+            }
+            // Check for end marker
+            else if (rowText.Contains($"{{{{/docTable}}}}"))
+            {
+                endMarkerRowIndex = i;
+                // If the end marker is in the same row as template, we'll use this row as template
+                if (templateRowIndex == -1)
+                {
+                    templateRow = rows[i];
+                    templateRowIndex = i;
+                }
+            }
         }
         
-        // Store table properties before clearing rows
+        // If we couldn't find the template row, use the first row
+        if (templateRow == null)
+        {
+            templateRow = rows[0];
+            templateRowIndex = 0;
+        }
+        
+        // Clone the template row to preserve styling
+        var clonedTemplateRow = (TableRow)templateRow.CloneNode(true);
+        
+        // Clean up the template row by removing all docTable markers
+        RemoveAllTableMarkers(clonedTemplateRow, tableVariable);
+        
+        // Store table properties before modifying rows
         var tableProperties = table.GetFirstChild<TableProperties>()?.CloneNode(true);
         
-        // Remove all existing rows but preserve table properties
-        while (table.Elements<TableRow>().Any())
+        // Determine which rows to keep (those outside the docTable section)
+        var rowsToKeep = new List<TableRow>();
+        for (int i = 0; i < rows.Count; i++)
         {
-            table.RemoveChild(table.Elements<TableRow>().First());
+            if (i < templateRowIndex || (endMarkerRowIndex != -1 && i > endMarkerRowIndex))
+            {
+                var rowToKeep = (TableRow)rows[i].CloneNode(true);
+                // Also clean up any markers from rows we're keeping
+                RemoveAllTableMarkers(rowToKeep, tableVariable);
+                rowsToKeep.Add(rowToKeep);
+            }
         }
+        
+        // Remove all existing rows but preserve table properties
+        table.RemoveAllChildren();
         
         // Re-add table properties if they existed
         if (tableProperties != null)
         {
-            table.PrependChild(tableProperties);
+            table.AppendChild(tableProperties);
         }
         
-        // Create header row with column names if we have data
-        if (tableData.Count > 0)
+        // Add back rows that were before the template
+        for (int i = 0; i < templateRowIndex; i++)
         {
-            // Use the template row structure for the header if available
-            var headerRow = (TableRow)templateRow.CloneNode(true);
-            var headerCells = headerRow.Elements<TableCell>().ToList();
-            
-            // Clear the content of header cells and add column names
-            var keys = tableData.First().Keys.ToList();
-            for (int i = 0; i < keys.Count; i++)
-            {
-                if (i < headerCells.Count)
-                {
-                    // Update existing cell with header text
-                    UpdateCellContent(headerCells[i], keys[i]);
-                }
-                else
-                {
-                    // If we need more cells than template provides, create new ones
-                    var newCell = new TableCell();
-                    UpdateCellContent(newCell, keys[i]);
-                    headerRow.AppendChild(newCell);
-                }
-            }
-            
-            // Remove any extra cells
-            while (headerCells.Count > keys.Count)
-            {
-                headerCells.Last().Remove();
-                headerCells.RemoveAt(headerCells.Count - 1);
-            }
-            
-            table.AppendChild(headerRow);
+            table.AppendChild(rowsToKeep[i]);
         }
         
-        // Create rows for each data item
+        // Create rows for each data item using the template
         foreach (var rowData in tableData)
         {
             // Clone the template row to preserve styling
-            var newRow = (TableRow)templateRow.CloneNode(true);
-            var cells = newRow.Elements<TableCell>().ToList();
+            var newRow = (TableRow)clonedTemplateRow.CloneNode(true);
             
-            // Get the keys in order
-            var keys = rowData.Keys.ToList();
-            
-            // Update cells with data
-            for (int i = 0; i < keys.Count; i++)
-            {
-                var cellValue = rowData[keys[i]];
-                
-                if (i < cells.Count)
-                {
-                    // Update existing cell
-                    UpdateCellContent(cells[i], cellValue);
-                }
-                else
-                {
-                    // If we need more cells than template provides, create new ones
-                    var newCell = new TableCell();
-                    UpdateCellContent(newCell, cellValue);
-                    newRow.AppendChild(newCell);
-                }
-            }
-            
-            // Remove any extra cells
-            while (cells.Count > keys.Count)
-            {
-                cells.Last().Remove();
-                cells.RemoveAt(cells.Count - 1);
-            }
+            // Replace placeholders in each cell
+            ReplaceDataPlaceholders(newRow, rowData);
             
             table.AppendChild(newRow);
         }
-    }
-    
-    private void UpdateCellContent(TableCell cell, string newContent)
-    {
-        // Get the first paragraph or create one if none exists
-        var paragraph = cell.Elements<Paragraph>().FirstOrDefault();
-        if (paragraph == null)
+        
+        // Add back rows that were after the end marker
+        if (endMarkerRowIndex != -1)
         {
-            paragraph = new Paragraph();
-            cell.AppendChild(paragraph);
-        }
-        else
-        {
-            // Clear existing content but keep the paragraph
-            paragraph.RemoveAllChildren();
+            for (int i = endMarkerRowIndex + 1; i < rows.Count; i++)
+            {
+                int keepIndex = i - (endMarkerRowIndex - templateRowIndex);
+                if (keepIndex < rowsToKeep.Count)
+                {
+                    table.AppendChild(rowsToKeep[keepIndex]);
+                }
+            }
         }
         
-        // Create a new run with the content
-        var run = new Run(new Text(newContent));
-        paragraph.AppendChild(run);
+        // Final scan through the entire table to remove any remaining markers
+        foreach (var row in table.Elements<TableRow>())
+        {
+            RemoveAllTableMarkers(row, tableVariable);
+        }
+    }
+    
+    // Helper method to remove all table markers from a row
+    private void RemoveAllTableMarkers(TableRow row, string tableVariable)
+    {
+        // Remove start marker
+        CleanupTableRow(row, $"{{{{#docTable {tableVariable}}}}}", "");
+        // Remove end marker
+        CleanupTableRow(row, "{{/docTable}}", "");
+    }
+    
+    // Helper method to replace data placeholders in a table row
+    private void ReplaceDataPlaceholders(TableRow row, Dictionary<string, string> data)
+    {
+        foreach (var cell in row.Descendants<TableCell>())
+        {
+            foreach (var paragraph in cell.Descendants<Paragraph>())
+            {
+                foreach (var run in paragraph.Descendants<Run>())
+                {
+                    foreach (var text in run.Descendants<Text>())
+                    {
+                        string originalText = text.Text;
+                        
+                        // Skip processing if the text is empty
+                        if (string.IsNullOrEmpty(originalText))
+                            continue;
+                            
+                        string newText = originalText;
+                        
+                        // First, remove any docTable markers that might be in this text element
+                        if (newText.Contains("{{#docTable"))
+                        {
+                            int startIndex = newText.IndexOf("{{#docTable");
+                            int endIndex = newText.IndexOf("}}", startIndex);
+                            if (endIndex > startIndex)
+                            {
+                                newText = newText.Remove(startIndex, endIndex - startIndex + 2);
+                            }
+                        }
+                        
+                        if (newText.Contains("{{/docTable}}"))
+                        {
+                            newText = newText.Replace("{{/docTable}}", "");
+                        }
+                        
+                        // Replace each data placeholder with its value
+                        foreach (var kvp in data)
+                        {
+                            string placeholder = $"{{{{{kvp.Key}}}}}";
+                            
+                            // Use a more precise replacement approach
+                            int startPos = 0;
+                            while (true)
+                            {
+                                int pos = newText.IndexOf(placeholder, startPos);
+                                if (pos < 0) break;
+                                
+                                // Check if this is a standalone placeholder and not part of another variable
+                                bool isStandalone = true;
+                                
+                                // Check if it's preceded by a dot (which would indicate it's part of a property access)
+                                if (pos > 0 && newText[pos - 1] == '.')
+                                {
+                                    isStandalone = false;
+                                }
+                                
+                                if (isStandalone)
+                                {
+                                    // Replace this occurrence
+                                    newText = newText.Substring(0, pos) + kvp.Value + newText.Substring(pos + placeholder.Length);
+                                    startPos = pos + kvp.Value.Length;
+                                }
+                                else
+                                {
+                                    // Skip this occurrence
+                                    startPos = pos + placeholder.Length;
+                                }
+                            }
+                        }
+                        
+                        // Only update if changed
+                        if (newText != originalText)
+                        {
+                            text.Text = newText;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void CleanupTableRow(TableRow row, string textToReplace, string replacement)
+    {
+        foreach (var cell in row.Descendants<TableCell>())
+        {
+            foreach (var paragraph in cell.Descendants<Paragraph>())
+            {
+                foreach (var run in paragraph.Descendants<Run>())
+                {
+                    foreach (var text in run.Descendants<Text>())
+                    {
+                        if (text.Text.Contains(textToReplace))
+                        {
+                            text.Text = text.Text.Replace(textToReplace, replacement);
+                        }
+                    }
+                }
+            }
+        }
     }
 }
