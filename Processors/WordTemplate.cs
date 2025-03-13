@@ -60,10 +60,7 @@ public class WordTemplate
                             ReplacePlaceholdersInPart(footerPart);
                         }
                     }
-
-                    // Process tables if any exist
-                    ProcessTables(doc.MainDocumentPart);
-
+                    
                     doc.MainDocumentPart.Document.Save();
                 }
 
@@ -145,98 +142,6 @@ public class WordTemplate
                             text.Text = textModified;
                         }
                     }
-                }
-            }
-        }
-    }
-
-    private void ProcessTables(MainDocumentPart mainPart)
-    {
-        if (mainPart?.Document?.Body == null) return;
-        
-        var tables = mainPart.Document.Body.Elements<Table>().ToList();
-        
-        foreach (var table in tables)
-        {
-            // Get the first row which typically contains headers
-            var firstRow = table.Elements<TableRow>().FirstOrDefault();
-            if (firstRow == null) continue;
-
-            // Check if this table has any of our table placeholders
-            var headerCells = firstRow.Elements<TableCell>().ToList();
-            string tableIdentifier = null;
-
-            foreach (var cell in headerCells)
-            {
-                var text = cell.Descendants<Text>().FirstOrDefault()?.Text;
-                if (text != null && text.StartsWith("{{") && text.EndsWith("}}"))
-                {
-                    tableIdentifier = text.Trim('{', '}');
-                    break;
-                }
-            }
-
-            if (tableIdentifier != null && _data.Tables.ContainsKey(tableIdentifier))
-            {
-                var tableData = _data.Tables[tableIdentifier];
-                
-                // Remove the header row if it only contained our identifier
-                if (headerCells.Count == 1)
-                {
-                    firstRow.Remove();
-                }
-
-                // Create a single row for the dictionary data
-                var newRow = new TableRow();
-                
-                // Add a cell for the key
-                var keyCell = new TableCell(
-                    new Paragraph(
-                        new Run(
-                            new Text("Key")
-                        )
-                    )
-                );
-                newRow.Append(keyCell);
-                
-                // Add a cell for the value
-                var valueCell = new TableCell(
-                    new Paragraph(
-                        new Run(
-                            new Text("Value")
-                        )
-                    )
-                );
-                newRow.Append(valueCell);
-                
-                table.Append(newRow);
-
-                // Add data rows
-                foreach (var kvp in tableData)
-                {
-                    var dataRow = new TableRow();
-                    
-                    // Add key cell
-                    var keyDataCell = new TableCell(
-                        new Paragraph(
-                            new Run(
-                                new Text(kvp.Key ?? string.Empty)
-                            )
-                        )
-                    );
-                    dataRow.Append(keyDataCell);
-                    
-                    // Add value cell
-                    var valueDataCell = new TableCell(
-                        new Paragraph(
-                            new Run(
-                                new Text(kvp.Value ?? string.Empty)
-                            )
-                        )
-                    );
-                    dataRow.Append(valueDataCell);
-                    
-                    table.Append(dataRow);
                 }
             }
         }
