@@ -6,17 +6,22 @@ public struct WordTemplateData
     {
         // Dictionary for simple key-value placeholders
         public Dictionary<string, string> Placeholders { get; set; }
+        // Dictionary for table data, where the key is the table name and the value is a list of dictionaries
+        // Each dictionary in the list represents a row, with keys as column names and values as cell contents
+        public Dictionary<string, List<Dictionary<string, string>>> Tables { get; set; }
         
-        // Constructor to initialize both dictionaries
-        public WordTemplateData(Dictionary<string, string> placeholders, Dictionary<string, Dictionary<string, string>> tables)
+        // Constructor to initialize all dictionaries
+        public WordTemplateData(Dictionary<string, string> placeholders, Dictionary<string, string> images, Dictionary<string, List<Dictionary<string, string>>> tables = null)
         {
             Placeholders = placeholders ?? new Dictionary<string, string>();
+            Tables = tables ?? new Dictionary<string, List<Dictionary<string, string>>>();
         }
         
         // Default constructor
         public WordTemplateData()
         {
             Placeholders = new Dictionary<string, string>();
+            Tables = new Dictionary<string, List<Dictionary<string, string>>>();
         }
         
         // Method to add a placeholder
@@ -29,5 +34,38 @@ public struct WordTemplateData
         public bool HasPlaceholder(string key)
         {
             return Placeholders.ContainsKey(key);
+        }
+        
+        // Method to add a table
+        public void AddTable(string tableName, List<Dictionary<string, string>> tableData)
+        {
+            if (Tables == null)
+            {
+                Tables = new Dictionary<string, List<Dictionary<string, string>>>();
+            }
+            
+            Tables[tableName] = tableData;
+        }
+        
+        // Method to add a row to an existing table
+        public void AddTableRow(string tableName, Dictionary<string, string> rowData)
+        {
+            if (Tables == null)
+            {
+                Tables = new Dictionary<string, List<Dictionary<string, string>>>();
+            }
+            
+            if (!Tables.ContainsKey(tableName))
+            {
+                Tables[tableName] = new List<Dictionary<string, string>>();
+            }
+            
+            Tables[tableName].Add(rowData);
+        }
+        
+        // Method to check if a table exists
+        public bool HasTable(string tableName)
+        {
+            return Tables.ContainsKey(tableName);
         }
     }
