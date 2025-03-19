@@ -6,6 +6,7 @@ public struct WordTemplateData
     {
         // Dictionary for simple key-value placeholders
         public Dictionary<string, string> Placeholders { get; set; }
+        public Dictionary<string, string> Images { get; set; }
         // Dictionary for table data, where the key is the table name and the value is a list of dictionaries
         // Each dictionary in the list represents a row, with keys as column names and values as cell contents
         public Dictionary<string, List<Dictionary<string, string>>> Tables { get; set; }
@@ -15,6 +16,7 @@ public struct WordTemplateData
         {
             Placeholders = placeholders ?? new Dictionary<string, string>();
             Tables = tables ?? new Dictionary<string, List<Dictionary<string, string>>>();
+            Images = images ?? new Dictionary<string, string>();
         }
         
         // Default constructor
@@ -22,6 +24,7 @@ public struct WordTemplateData
         {
             Placeholders = new Dictionary<string, string>();
             Tables = new Dictionary<string, List<Dictionary<string, string>>>();
+            Images = new Dictionary<string, string>();
         }
         
         // Method to add a placeholder
@@ -34,6 +37,18 @@ public struct WordTemplateData
         public bool HasPlaceholder(string key)
         {
             return Placeholders.ContainsKey(key);
+        }
+        
+        // Method to add an image
+        public void AddImage(string key, string imagePath)
+        {
+            Images[key] = imagePath;
+        }
+        
+        // Method to check if an image exists
+        public bool HasImage(string key)
+        {
+            return Images.ContainsKey(key);
         }
         
         // Method to add a table

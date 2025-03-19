@@ -9,6 +9,9 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using ForgeDoc.Structs;
+using A = DocumentFormat.OpenXml.Drawing;
+using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
+using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 
 namespace ForgeDoc.Processors;
 
@@ -48,6 +51,9 @@ public class WordTemplate
                     
                     // Process tables in main document
                     ProcessTablePlaceholders(doc.MainDocumentPart);
+                    
+                    // Process image placeholders in main document
+                    ProcessImagePlaceholders(doc.MainDocumentPart);
 
                     // Replace placeholders in headers
                     if (doc.MainDocumentPart.HeaderParts != null)
@@ -56,6 +62,7 @@ public class WordTemplate
                         {
                             ReplacePlaceholdersInPart(headerPart);
                             ProcessTablePlaceholders(headerPart);
+                            ProcessImagePlaceholders(headerPart);
                         }
                     }
 
@@ -66,6 +73,7 @@ public class WordTemplate
                         {
                             ReplacePlaceholdersInPart(footerPart);
                             ProcessTablePlaceholders(footerPart);
+                            ProcessImagePlaceholders(footerPart);
                         }
                     }
                     
@@ -153,6 +161,333 @@ public class WordTemplate
                 }
             }
         }
+    }
+    
+    private void ProcessImagePlaceholders(OpenXmlPart part)
+    {
+        if (part?.RootElement == null || _data.Images == null || !_data.Images.Any()) return;
+
+        // Find all paragraphs that contain image placeholders
+        foreach (var paragraph in part.RootElement.Descendants<Paragraph>().ToList())
+        {
+            // Get the text content of the paragraph
+            string paragraphText = GetParagraphText(paragraph);
+            
+            // Check for image placeholders in both formats: {% key %} and {{image:key}}
+            var imagePlaceholderPatterns = new List<Regex>
+            {
+                new Regex(@"\{%\s*([^}]+)\s*%\}"),           // Format: {% key %}
+                new Regex(@"\{\{image:([^}]+)\}\}")          // Format: {{image:key}}
+            };
+            
+            foreach (var pattern in imagePlaceholderPatterns)
+            {
+                var matches = pattern.Matches(paragraphText);
+                
+                if (matches.Count > 0)
+                {
+                    Console.WriteLine($"Found {matches.Count} image placeholders in paragraph: {paragraphText}");
+                    
+                    foreach (Match match in matches)
+                    {
+                        string key = match.Groups[1].Value.Trim();
+                        Console.WriteLine($"Processing image key: '{key}'");
+                        
+                        // Check if we have an image for this key
+                        if (_data.HasImage(key) && File.Exists(_data.Images[key]))
+                        {
+                            // Get the image path
+                            string imagePath = _data.Images[key];
+                            Console.WriteLine($"Found image at path: {imagePath}");
+                            
+                            // Insert the image
+                            InsertImageInParagraph(part, paragraph, imagePath, match.Value);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Image not found for key: '{key}'. HasImage: {_data.HasImage(key)}, Path exists: {(_data.HasImage(key) ? File.Exists(_data.Images[key]).ToString() : "N/A")}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    private void InsertImageInParagraph(OpenXmlPart part, Paragraph paragraph, string imagePath, string placeholderText)
+    {
+        try
+        {
+            Console.WriteLine($"Starting image insertion for placeholder: {placeholderText}, image path: {imagePath}");
+            
+            // Get the MainDocumentPart
+            MainDocumentPart mainPart = part as MainDocumentPart;
+            if (mainPart == null && part is HeaderPart headerPart)
+            {
+                mainPart = headerPart.GetParentParts().OfType<MainDocumentPart>().FirstOrDefault();
+                Console.WriteLine("Getting MainDocumentPart from HeaderPart");
+            }
+            else if (mainPart == null && part is FooterPart footerPart)
+            {
+                mainPart = footerPart.GetParentParts().OfType<MainDocumentPart>().FirstOrDefault();
+                Console.WriteLine("Getting MainDocumentPart from FooterPart");
+            }
+            
+            if (mainPart == null)
+            {
+                mainPart = part.GetParentParts().OfType<MainDocumentPart>().FirstOrDefault();
+                Console.WriteLine("Getting MainDocumentPart from parent parts");
+            }
+            
+            if (mainPart == null)
+            {
+                Console.WriteLine("ERROR: Could not find MainDocumentPart");
+                return;
+            }
+            
+            // Get image dimensions
+            int imageWidthEmu;
+            int imageHeightEmu;
+            ImagePartType imageType;
+            
+            using (var img = System.Drawing.Image.FromFile(imagePath))
+            {
+                // Convert pixels to EMUs (English Metric Units)
+                // 1 inch = 914400 EMUs, 1 inch = 96 pixels (default)
+                double emuPerPixel = 9525;
+                imageWidthEmu = (int)(img.Width * emuPerPixel);
+                imageHeightEmu = (int)(img.Height * emuPerPixel);
+                Console.WriteLine($"Image dimensions: {img.Width}x{img.Height} pixels, {imageWidthEmu}x{imageHeightEmu} EMUs");
+                
+                // Determine image type based on format
+                imageType = GetImagePartTypeFromFormat(img.RawFormat);
+                Console.WriteLine($"Detected image format: {imageType}");
+            }
+            
+            // Add the image to the document
+            ImagePart imagePart = mainPart.AddImagePart(imageType);
+            using (FileStream stream = new FileStream(imagePath, FileMode.Open))
+            {
+                imagePart.FeedData(stream);
+                Console.WriteLine("Image data fed to ImagePart");
+            }
+            
+            // Create the drawing element
+            Drawing drawing = AddImageToAnyWhere(mainPart.Document, mainPart.GetIdOfPart(imagePart), imageWidthEmu, imageHeightEmu, imageType);
+            Console.WriteLine("Drawing element created");
+            
+            // Replace the placeholder text with the image
+            ReplaceTextWithImage(paragraph, placeholderText, drawing);
+            Console.WriteLine("Placeholder text replaced with image");
+        }
+        catch (Exception ex)
+        {
+            // Log the error or handle it as appropriate
+            Console.WriteLine($"ERROR inserting image: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+        }
+    }
+    
+    private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
+    {
+        // Create a unique ID for the image
+        string imageId = $"image{Guid.NewGuid()}";
+        
+        // Determine file extension based on image type
+        string fileExtension = GetFileExtensionFromImageType(imageType);
+        
+        // Create a new Drawing object
+        Drawing drawing = new Drawing(
+            new DW.Inline(
+                new DW.Extent() { Cx = imageSizeWidth, Cy = imageSizeHeight },
+                new DW.EffectExtent()
+                {
+                    LeftEdge = 0L,
+                    TopEdge = 0L,
+                    RightEdge = 0L,
+                    BottomEdge = 0L
+                },
+                new DW.DocProperties()
+                {
+                    Id = (UInt32Value)1U,
+                    Name = imageId
+                },
+                new DW.NonVisualGraphicFrameDrawingProperties(
+                    new A.GraphicFrameLocks() { NoChangeAspect = true }),
+                new A.Graphic(
+                    new A.GraphicData(
+                        new PIC.Picture(
+                            new PIC.NonVisualPictureProperties(
+                                new PIC.NonVisualDrawingProperties()
+                                {
+                                    Id = (UInt32Value)0U,
+                                    Name = $"{imageId}{fileExtension}"
+                                },
+                                new PIC.NonVisualPictureDrawingProperties()),
+                            new PIC.BlipFill(
+                                new A.Blip(
+                                    new A.BlipExtensionList(
+                                        new A.BlipExtension()
+                                        {
+                                            Uri = "{28A0092B-C50C-407E-A947-70E740481C1C}"
+                                        })
+                                )
+                                {
+                                    Embed = getIdOfPart,
+                                    CompressionState = A.BlipCompressionValues.Print
+                                },
+                                new A.Stretch(
+                                    new A.FillRectangle())),
+                            new PIC.ShapeProperties(
+                                new A.Transform2D(
+                                    new A.Offset() { X = 0L, Y = 0L },
+                                    new A.Extents() { Cx = imageSizeWidth, Cy = imageSizeHeight }),
+                                new A.PresetGeometry(
+                                    new A.AdjustValueList()
+                                )
+                                { Preset = A.ShapeTypeValues.Rectangle }))
+                    )
+                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
+            )
+            {
+                DistanceFromTop = (UInt32Value)0U,
+                DistanceFromBottom = (UInt32Value)0U,
+                DistanceFromLeft = (UInt32Value)0U,
+                DistanceFromRight = (UInt32Value)0U,
+                EditId = "50D07946"
+            });
+            
+        return drawing;
+    }
+    
+    private string GetFileExtensionFromImageType(ImagePartType imageType)
+    {
+        switch (imageType)
+        {
+            case ImagePartType.Jpeg:
+                return ".jpg";
+            case ImagePartType.Png:
+                return ".png";
+            case ImagePartType.Gif:
+                return ".gif";
+            case ImagePartType.Bmp:
+                return ".bmp";
+            case ImagePartType.Tiff:
+                return ".tiff";
+            default:
+                return ".jpg";
+        }
+    }
+    
+    private ImagePartType GetImagePartTypeFromFormat(System.Drawing.Imaging.ImageFormat format)
+    {
+        if (format.Equals(System.Drawing.Imaging.ImageFormat.Jpeg))
+            return ImagePartType.Jpeg;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Png))
+            return ImagePartType.Png;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Gif))
+            return ImagePartType.Gif;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Bmp))
+            return ImagePartType.Bmp;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Tiff))
+            return ImagePartType.Tiff;
+        else
+            return ImagePartType.Jpeg; // Default to JPEG
+    }
+    
+    private void ReplaceTextWithImage(Paragraph paragraph, string placeholderText, Drawing drawing)
+    {
+        Console.WriteLine($"Starting ReplaceTextWithImage for placeholder: {placeholderText}");
+        
+        // Get all runs in the paragraph
+        var runs = paragraph.Elements<Run>().ToList();
+        if (!runs.Any())
+        {
+            Console.WriteLine("No runs found in paragraph");
+            return;
+        }
+        
+        // Find the run(s) containing the placeholder
+        string combinedText = GetParagraphText(paragraph);
+        int placeholderIndex = combinedText.IndexOf(placeholderText);
+        
+        Console.WriteLine($"Combined paragraph text: '{combinedText}'");
+        Console.WriteLine($"Placeholder index: {placeholderIndex}");
+        
+        if (placeholderIndex < 0)
+        {
+            Console.WriteLine("Placeholder not found in paragraph text");
+            return;
+        }
+        
+        // Create a new run with the image
+        Run imageRun = new Run(drawing);
+        
+        // Create a new paragraph with the content before the placeholder
+        Paragraph newParagraph = new Paragraph();
+        int currentPosition = 0;
+        bool placeholderReplaced = false;
+        
+        Console.WriteLine($"Processing {runs.Count} runs");
+        
+        foreach (var run in runs)
+        {
+            string runText = string.Join("", run.Elements<Text>().Select(t => t.Text));
+            int runLength = runText.Length;
+            
+            Console.WriteLine($"Run text: '{runText}', length: {runLength}, currentPosition: {currentPosition}");
+            
+            // If we haven't reached the placeholder yet
+            if (currentPosition + runLength <= placeholderIndex)
+            {
+                // Add the run as is
+                newParagraph.AppendChild(run.CloneNode(true));
+                currentPosition += runLength;
+                Console.WriteLine("Added run before placeholder");
+            }
+            // If the placeholder starts within this run
+            else if (currentPosition <= placeholderIndex && currentPosition + runLength > placeholderIndex)
+            {
+                // Add the text before the placeholder
+                int beforePlaceholderLength = placeholderIndex - currentPosition;
+                if (beforePlaceholderLength > 0)
+                {
+                    string textBefore = runText.Substring(0, beforePlaceholderLength);
+                    newParagraph.AppendChild(new Run(new Text(textBefore)));
+                    Console.WriteLine($"Added text before placeholder: '{textBefore}'");
+                }
+                
+                // Add the image
+                if (!placeholderReplaced)
+                {
+                    newParagraph.AppendChild(imageRun);
+                    placeholderReplaced = true;
+                    Console.WriteLine("Added image run");
+                }
+                
+                // Add the text after the placeholder if any
+                int afterPlaceholderStart = placeholderIndex + placeholderText.Length - currentPosition;
+                if (afterPlaceholderStart < runLength)
+                {
+                    string textAfter = runText.Substring(afterPlaceholderStart);
+                    newParagraph.AppendChild(new Run(new Text(textAfter)));
+                    Console.WriteLine($"Added text after placeholder: '{textAfter}'");
+                }
+                
+                currentPosition += runLength;
+            }
+            // If we've already replaced the placeholder
+            else if (placeholderReplaced)
+            {
+                // Add the run as is
+                newParagraph.AppendChild(run.CloneNode(true));
+                currentPosition += runLength;
+                Console.WriteLine("Added run after placeholder");
+            }
+        }
+        
+        // Replace the original paragraph with the new one
+        paragraph.Parent.ReplaceChild(newParagraph, paragraph);
+        Console.WriteLine("Replaced original paragraph with new paragraph containing the image");
     }
     
     private void ProcessTablePlaceholders(OpenXmlPart part)
@@ -376,16 +711,10 @@ public class WordTemplate
         }
     }
     
-    private void DuplicateRowsForTableData(TableRow originalRow, List<Dictionary<string, string>> tableData)
+    private void CreateTableRows(Table parentTable, TableRow originalRow, List<Dictionary<string, string>> tableData)
     {
-        if (tableData == null || tableData.Count <= 1) return;
-        
-        // Find the parent table
-        Table parentTable = originalRow.Ancestors<Table>().FirstOrDefault();
-        if (parentTable == null) return;
-        
-        // Create a copy of the original row for each additional data item
-        for (int i = 1; i < tableData.Count; i++)
+        // For each row in the table data
+        for (int i = 0; i < tableData.Count; i++)
         {
             // Clone the original row
             TableRow newRow = (TableRow)originalRow.CloneNode(true);
@@ -455,11 +784,28 @@ public class WordTemplate
                 }
             }
             
-            // Add the new row to the table
+            // Add the new row to the table after the last row we added
             parentTable.InsertAfter(newRow, originalRow);
+            originalRow = newRow;
+        }
+    }
+    
+    private void DuplicateRowsForTableData(TableRow originalRow, List<Dictionary<string, string>> tableData)
+    {
+        if (tableData == null || tableData.Count <= 1) return;
+        
+        // Find the parent table
+        Table parentTable = originalRow.Ancestors<Table>().FirstOrDefault();
+        if (parentTable == null) return;
+        
+        // Create a copy of the original row for each additional data item
+        for (int i = 1; i < tableData.Count; i++)
+        {
+            // Clone the original row
+            TableRow newRow = (TableRow)originalRow.CloneNode(true);
             
-            // Update the original row reference to the newly added row
-            // This ensures that each new row is added after the previous one
+            // Add the new row to the table after the last row we added
+            parentTable.InsertAfter(newRow, originalRow);
             originalRow = newRow;
         }
     }
@@ -684,96 +1030,5 @@ public class WordTemplate
                 )
             )
         );
-    }
-    
-    private Drawing AddImageToAnyWhere(WordprocessingDocument document, string relationshipId, int width, int height)
-    {
-        var nextId = GetMaxDocPropertyId(document) + 1;
-
-        Size size = new Size(width, height); //Size(260, 80);
-
-        long widthInEmus = size.Width * 9525;
-        long heightInEmus = size.Height * 9525;
-
-        // Define the reference of the image.
-        var element =
-            new Drawing(
-                new DocumentFormat.OpenXml.Drawing.Wordprocessing.Inline(
-                    new DocumentFormat.OpenXml.Drawing.Wordprocessing.Extent() { Cx = widthInEmus, Cy = heightInEmus },
-                    new DocumentFormat.OpenXml.Drawing.Wordprocessing.EffectExtent()
-                    {
-                        LeftEdge = 0L,
-                        TopEdge = 0L,
-                        RightEdge = 0L,
-                        BottomEdge = 0L
-                    },
-                    new DocumentFormat.OpenXml.Drawing.Wordprocessing.DocProperties()
-                    {
-                        Id = (UInt32Value)nextId,
-                        Name = string.Format("Picture {0}", nextId)
-                    },
-                    new DocumentFormat.OpenXml.Drawing.Wordprocessing.NonVisualGraphicFrameDrawingProperties(
-                        new DocumentFormat.OpenXml.Drawing.GraphicFrameLocks() { NoChangeAspect = true }),
-                    new DocumentFormat.OpenXml.Drawing.Graphic(
-                        new DocumentFormat.OpenXml.Drawing.GraphicData(
-                            new DocumentFormat.OpenXml.Drawing.Pictures.Picture(
-                                new DocumentFormat.OpenXml.Drawing.Pictures.NonVisualPictureProperties(
-                                    new DocumentFormat.OpenXml.Drawing.Pictures.NonVisualDrawingProperties()
-                                    {
-                                        Id = (UInt32Value)0U,
-                                        Name = "New Bitmap Image.jpg"
-                                    },
-                                    new DocumentFormat.OpenXml.Drawing.Pictures.NonVisualPictureDrawingProperties()),
-                                new DocumentFormat.OpenXml.Drawing.Pictures.BlipFill(
-                                    new DocumentFormat.OpenXml.Drawing.Blip(
-                                        new DocumentFormat.OpenXml.Drawing.BlipExtensionList(
-                                            new DocumentFormat.OpenXml.Drawing.BlipExtension()
-                                            {
-                                                Uri =
-                                                    "{28A0092B-C50C-407E-A947-70E740481C1C}"
-                                            })
-                                        )
-                                    {
-                                        Embed = relationshipId,
-                                        CompressionState =
-                                            DocumentFormat.OpenXml.Drawing.BlipCompressionValues.Print
-                                    },
-                                    new DocumentFormat.OpenXml.Drawing.Stretch(
-                                        new DocumentFormat.OpenXml.Drawing.FillRectangle())),
-                                new DocumentFormat.OpenXml.Drawing.Pictures.ShapeProperties(
-                                    new DocumentFormat.OpenXml.Drawing.Transform2D(
-                                        new DocumentFormat.OpenXml.Drawing.Offset() { X = 0L, Y = 0L },
-                                        new DocumentFormat.OpenXml.Drawing.Extents() { Cx = widthInEmus, Cy = heightInEmus }),
-                                    new DocumentFormat.OpenXml.Drawing.PresetGeometry(
-                                        new DocumentFormat.OpenXml.Drawing.AdjustValueList()
-                                        )
-                                    { Preset = DocumentFormat.OpenXml.Drawing.ShapeTypeValues.Rectangle }))
-                            )
-                        { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
-                    )
-                {
-                    DistanceFromTop = (UInt32Value)0U,
-                    DistanceFromBottom = (UInt32Value)0U,
-                    DistanceFromLeft = (UInt32Value)0U,
-                    DistanceFromRight = (UInt32Value)0U,
-                    EditId = "50D07946"
-                });
-
-        // Append the reference to body, the element should be in a Run.
-        // var newParagraph = new Paragraph(new Run(element));
-        //ParagraphHelper.AddToBody(newParagraph);
-        //ParagraphHelper.AddToBody(newParagraph);
-
-        //return newParagraph;
-        return element;
-    }
-    
-    private uint GetMaxDocPropertyId(WordprocessingDocument document)
-    {
-        return document
-            .MainDocumentPart
-            .RootElement
-            .Descendants<DocumentFormat.OpenXml.Drawing.Wordprocessing.DocProperties>()
-            .Max(x => (uint?)x.Id) ?? 0;
     }
 }
