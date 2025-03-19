@@ -5,8 +5,96 @@ ForgeDoc is a library for processing Word templates with placeholders and genera
 ## Features
 
 - Replace text placeholders in Word documents
-- Add images to Word documents
+- Add images to Word documents using `{% imageKey %}` syntax
 - Render tables in Word documents
+- Support for rich text formatting
+- Works with headers, footers, and tables
+
+## Image Placeholders
+
+ForgeDoc supports inserting images into Word documents using a special placeholder syntax:
+
+```text
+{% imageKey %}
+```
+
+Where `imageKey` is a key that references an image path you've added to the template data.
+
+### Adding Images to Template Data
+
+```csharp
+// Create template data
+var data = new WordTemplateData();
+
+// Add image (path must be accessible at runtime)
+data.AddImage("Logo", @"C:\path\to\logo.png");
+data.AddImage("Signature", @"C:\path\to\signature.jpg");
+
+// Process the template
+var template = new WordTemplate("template.docx", data);
+template.Process("output.docx");
+```
+
+### Images in Tables
+
+You can also include images in tables by using the same placeholder syntax:
+
+```csharp
+var tableData = new List<Dictionary<string, string>>
+{
+    new Dictionary<string, string> { { "Name", "John Doe" }, { "SignatureKey", "Signature1" } },
+    new Dictionary<string, string> { { "Name", "Jane Smith" }, { "SignatureKey", "Signature2" } }
+};
+
+// Add the table data
+data.AddTable("Employees", tableData);
+
+// Add the images
+data.AddImage("Signature1", @"C:\path\to\john_signature.png");
+data.AddImage("Signature2", @"C:\path\to\jane_signature.png");
+```
+
+In your Word template, use:
+```text
+{{#docTable Employees}}
+Name: {{ item.Name }}
+Signature: {% {{ item.SignatureKey }} %}
+{{/docTable}}
+```
+
+### Working with Database Images
+
+When working with images from a database, save them to temporary files first:
+
+```csharp
+// Save database image to a temporary file
+string tempPath = Path.Combine(Path.GetTempPath(), $"signature_{Guid.NewGuid()}.png");
+File.WriteAllBytes(tempPath, databaseImageBytes);
+
+// Add the image to the template data
+data.AddImage("Signature", tempPath);
+
+// Remember to clean up temporary files after processing
+try {
+    if (File.Exists(tempPath)) {
+        File.Delete(tempPath);
+    }
+} catch {
+    // Handle cleanup errors
+}
+```
+
+### Supported Image Formats
+
+The processor supports common image formats:
+
+  • PNG
+  • JPEG/JPG
+  • GIF
+  • BMP
+  • TIFF
+
+Images are inserted at their original size.
 
 ## Table Rendering
 
