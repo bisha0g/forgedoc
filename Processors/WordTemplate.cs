@@ -165,28 +165,25 @@ public class WordTemplate
     
     private void ProcessImagePlaceholders(OpenXmlPart part)
     {
-        Console.WriteLine("Processing image placeholders");
+        if (part?.RootElement == null || _data.Images == null || !_data.Images.Any()) return;
         
-        // Check if we have any images to process
-        if (part?.RootElement == null || _data.Images == null || !_data.Images.Any())
-        {
-            Console.WriteLine("No images to process or document has no root element");
-            return;
-        }
+        Console.WriteLine($"Processing image placeholders in {part.GetType().Name}");
         
         // Get all paragraphs in the document
         var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
-        Console.WriteLine($"Found {paragraphs.Count} paragraphs");
         
         foreach (var paragraph in paragraphs)
         {
             // Get the text of the paragraph
-            string paragraphText = paragraph.InnerText;
-            Console.WriteLine($"Paragraph text: {paragraphText}");
+            string paragraphText = GetParagraphText(paragraph);
             
-            // Check if the paragraph contains an image placeholder
-            // Support both {% key %} and {{image:key}} formats
-            var imagePlaceholders = new List<string>();
+            // Skip if no text
+            if (string.IsNullOrWhiteSpace(paragraphText)) continue;
+            
+            Console.WriteLine($"Checking paragraph: '{paragraphText}'");
+            
+            // List to store image placeholders found in this paragraph
+            List<string> imagePlaceholders = new List<string>();
             
             // Find {% key %} or {% key:widthxheight %} style placeholders
             // Updated regex to match the format {% SupervisorSignature:200x100 %}
@@ -197,20 +194,59 @@ public class WordTemplate
                 Console.WriteLine($"Found image placeholder: {match.Value}");
             }
             
-            // Find {{image:key}} style placeholders
-            var altMatches = Regex.Matches(paragraphText, @"\{\{image:([^}]+)\}\}");
-            foreach (Match match in altMatches)
+            // Also check for any text that might include dimensions but not in the expected format
+            var dimensionMatches = Regex.Matches(paragraphText, @":\d+x\d+");
+            foreach (Match match in dimensionMatches)
             {
-                imagePlaceholders.Add(match.Value);
-                Console.WriteLine($"Found alternative image placeholder: {match.Value}");
+                // Find the surrounding placeholder-like text
+                int startIndex = paragraphText.LastIndexOf("{%", match.Index);
+                int endIndex = paragraphText.IndexOf("%}", match.Index);
+                
+                if (startIndex >= 0 && endIndex > startIndex)
+                {
+                    string fullPlaceholder = paragraphText.Substring(startIndex, endIndex - startIndex + 2);
+                    if (!imagePlaceholders.Contains(fullPlaceholder))
+                    {
+                        imagePlaceholders.Add(fullPlaceholder);
+                        Console.WriteLine($"Found dimension-containing text: {fullPlaceholder}");
+                    }
+                }
             }
             
-            Console.WriteLine($"Found {imagePlaceholders.Count} image placeholders in paragraph");
+            // Also check for standalone dimension patterns like "100x100"
+            var standaloneDimensions = Regex.Matches(paragraphText, @"\b\d+x\d+\b");
+            foreach (Match match in standaloneDimensions)
+            {
+                // Look for nearby placeholder markers
+                int beforeIndex = Math.Max(0, match.Index - 20);
+                int afterIndex = Math.Min(paragraphText.Length - 1, match.Index + match.Length + 20);
+                string surrounding = paragraphText.Substring(beforeIndex, afterIndex - beforeIndex);
+                
+                if (surrounding.Contains("{%") && surrounding.Contains("%}"))
+                {
+                    // Try to extract the full placeholder
+                    int startIndex = surrounding.IndexOf("{%");
+                    if (startIndex >= 0)
+                    {
+                        startIndex += beforeIndex;
+                        int endIndex = paragraphText.IndexOf("%}", startIndex);
+                        if (endIndex > startIndex)
+                        {
+                            string fullPlaceholder = paragraphText.Substring(startIndex, endIndex - startIndex + 2);
+                            if (!imagePlaceholders.Contains(fullPlaceholder))
+                            {
+                                imagePlaceholders.Add(fullPlaceholder);
+                                Console.WriteLine($"Found placeholder with nearby dimensions: {fullPlaceholder}");
+                            }
+                        }
+                    }
+                }
+            }
             
-            // Process each image placeholder
+            // Process each placeholder
             foreach (string placeholder in imagePlaceholders)
             {
-                string key;
+                string key = null;
                 
                 // Extract the key from the placeholder
                 if (placeholder.StartsWith("{%"))
@@ -234,45 +270,31 @@ public class WordTemplate
                         continue;
                     }
                 }
-                else
+                
+                // Skip if no key found
+                if (string.IsNullOrEmpty(key))
                 {
-                    // Extract key from {{image:key}}
-                    var match = Regex.Match(placeholder, @"\{\{image:([^}]+)\}\}");
-                    if (match.Success)
-                    {
-                        key = match.Groups[1].Value.Trim();
-                        Console.WriteLine($"Extracted key from alternative placeholder: '{key}'");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Failed to extract key from placeholder: {placeholder}");
-                        continue;
-                    }
+                    Console.WriteLine("No key found in placeholder");
+                    continue;
                 }
                 
-                Console.WriteLine($"Processing image placeholder: {placeholder}, key: {key}");
+                // Get the image path from the data
+                string imagePath = _data.GetImage(key);
+                if (string.IsNullOrEmpty(imagePath))
+                {
+                    Console.WriteLine($"No image found for key: {key}");
+                    continue;
+                }
                 
-                // Check if the image exists
-                if (_data.HasImage(key))
+                // Check if the image file exists
+                if (!File.Exists(imagePath))
                 {
-                    string imagePath = _data.GetImage(key);
-                    Console.WriteLine($"Found image path: {imagePath}");
-                    
-                    // Check if the image file exists
-                    if (File.Exists(imagePath))
-                    {
-                        // Insert the image into the paragraph
-                        InsertImageInParagraph(part, paragraph, imagePath, placeholder);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"WARNING: Image file not found: {imagePath}");
-                    }
+                    Console.WriteLine($"Image file not found: {imagePath}");
+                    continue;
                 }
-                else
-                {
-                    Console.WriteLine($"WARNING: No image found for key: {key}");
-                }
+                
+                // Insert the image
+                InsertImageInParagraph(part, paragraph, imagePath, placeholder);
             }
         }
     }
@@ -404,6 +426,92 @@ public class WordTemplate
         }
     }
     
+    private void ReplaceTextWithImage(Paragraph paragraph, string placeholderText, Drawing drawing)
+    {
+        Console.WriteLine($"Starting ReplaceTextWithImage for placeholder: {placeholderText}");
+        
+        try
+        {
+            // Create a completely new paragraph to replace the original one
+            Paragraph newParagraph = new Paragraph();
+            
+            // Copy paragraph properties if they exist
+            if (paragraph.ParagraphProperties != null)
+            {
+                newParagraph.ParagraphProperties = (ParagraphProperties)paragraph.ParagraphProperties.CloneNode(true);
+            }
+            
+            // Get the text content of the paragraph
+            string paragraphText = GetParagraphText(paragraph);
+            Console.WriteLine($"Full paragraph text: '{paragraphText}'");
+            
+            // Find the placeholder in the paragraph text
+            int placeholderIndex = paragraphText.IndexOf(placeholderText);
+            
+            // If the exact placeholder isn't found, try to find a similar pattern
+            if (placeholderIndex < 0)
+            {
+                // Look for patterns like "{% key:100x100 %}" or ":100x100 %}" or just "100x100 %}"
+                var matches = Regex.Matches(paragraphText, @"\{%[^}]+%\}|\:\d+x\d+\s*%\}|\d+x\d+\s*%\}");
+                foreach (Match match in matches)
+                {
+                    Console.WriteLine($"Found potential placeholder fragment: '{match.Value}'");
+                    placeholderIndex = match.Index;
+                    placeholderText = match.Value;
+                    
+                    // If we found a fragment like ":100x100 %}", try to find the start of the placeholder
+                    if (placeholderText.StartsWith(":"))
+                    {
+                        int startIndex = paragraphText.LastIndexOf("{%", placeholderIndex);
+                        if (startIndex >= 0)
+                        {
+                            placeholderIndex = startIndex;
+                            placeholderText = paragraphText.Substring(startIndex, match.Index + match.Length - startIndex);
+                            Console.WriteLine($"Expanded placeholder to: '{placeholderText}'");
+                        }
+                    }
+                    break;
+                }
+            }
+            
+            if (placeholderIndex < 0)
+            {
+                Console.WriteLine("Could not find placeholder in paragraph text");
+                return;
+            }
+            
+            // Create text runs for content before and after the placeholder
+            if (placeholderIndex > 0)
+            {
+                string beforeText = paragraphText.Substring(0, placeholderIndex);
+                newParagraph.AppendChild(new Run(new Text(beforeText)));
+                Console.WriteLine($"Added text before placeholder: '{beforeText}'");
+            }
+            
+            // Add the image
+            newParagraph.AppendChild(new Run(drawing));
+            Console.WriteLine("Added image to paragraph");
+            
+            // Add text after the placeholder
+            int afterIndex = placeholderIndex + placeholderText.Length;
+            if (afterIndex < paragraphText.Length)
+            {
+                string afterText = paragraphText.Substring(afterIndex);
+                newParagraph.AppendChild(new Run(new Text(afterText)));
+                Console.WriteLine($"Added text after placeholder: '{afterText}'");
+            }
+            
+            // Replace the original paragraph with our new one
+            paragraph.Parent.ReplaceChild(newParagraph, paragraph);
+            Console.WriteLine("Replaced original paragraph with new paragraph containing the image");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in ReplaceTextWithImage: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+        }
+    }
+    
     private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
     {
         // Create a unique ID for the image
@@ -509,102 +617,6 @@ public class WordTemplate
             return ImagePartType.Tiff;
         else
             return ImagePartType.Jpeg; // Default to JPEG
-    }
-    
-    private void ReplaceTextWithImage(Paragraph paragraph, string placeholderText, Drawing drawing)
-    {
-        Console.WriteLine($"Starting ReplaceTextWithImage for placeholder: {placeholderText}");
-        
-        // Get all runs in the paragraph
-        var runs = paragraph.Elements<Run>().ToList();
-        if (!runs.Any())
-        {
-            Console.WriteLine("No runs found in paragraph");
-            return;
-        }
-        
-        // Find the run(s) containing the placeholder
-        string combinedText = GetParagraphText(paragraph);
-        int placeholderIndex = combinedText.IndexOf(placeholderText);
-        
-        Console.WriteLine($"Combined paragraph text: '{combinedText}'");
-        Console.WriteLine($"Placeholder index: {placeholderIndex}");
-        
-        if (placeholderIndex < 0)
-        {
-            Console.WriteLine("Placeholder not found in paragraph text");
-            return;
-        }
-        
-        // Create a new run with the image
-        Run imageRun = new Run(drawing);
-        
-        // Create a new paragraph with the content before the placeholder
-        Paragraph newParagraph = new Paragraph();
-        int currentPosition = 0;
-        bool placeholderReplaced = false;
-        
-        Console.WriteLine($"Processing {runs.Count} runs");
-        
-        foreach (var run in runs)
-        {
-            string runText = string.Join("", run.Elements<Text>().Select(t => t.Text));
-            int runLength = runText.Length;
-            
-            Console.WriteLine($"Run text: '{runText}', length: {runLength}, currentPosition: {currentPosition}");
-            
-            // If we haven't reached the placeholder yet
-            if (currentPosition + runLength <= placeholderIndex)
-            {
-                // Add the run as is
-                newParagraph.AppendChild(run.CloneNode(true));
-                currentPosition += runLength;
-                Console.WriteLine("Added run before placeholder");
-            }
-            // If the placeholder starts within this run
-            else if (currentPosition <= placeholderIndex && currentPosition + runLength > placeholderIndex)
-            {
-                // Add the text before the placeholder
-                int beforePlaceholderLength = placeholderIndex - currentPosition;
-                if (beforePlaceholderLength > 0)
-                {
-                    string textBefore = runText.Substring(0, beforePlaceholderLength);
-                    newParagraph.AppendChild(new Run(new Text(textBefore)));
-                    Console.WriteLine($"Added text before placeholder: '{textBefore}'");
-                }
-                
-                // Add the image
-                if (!placeholderReplaced)
-                {
-                    newParagraph.AppendChild(imageRun);
-                    placeholderReplaced = true;
-                    Console.WriteLine("Added image run");
-                }
-                
-                // Add the text after the placeholder if any
-                int afterPlaceholderStart = placeholderIndex + placeholderText.Length - currentPosition;
-                if (afterPlaceholderStart < runLength)
-                {
-                    string textAfter = runText.Substring(afterPlaceholderStart);
-                    newParagraph.AppendChild(new Run(new Text(textAfter)));
-                    Console.WriteLine($"Added text after placeholder: '{textAfter}'");
-                }
-                
-                currentPosition += runLength;
-            }
-            // If we've already replaced the placeholder
-            else if (placeholderReplaced)
-            {
-                // Add the run as is
-                newParagraph.AppendChild(run.CloneNode(true));
-                currentPosition += runLength;
-                Console.WriteLine("Added run after placeholder");
-            }
-        }
-        
-        // Replace the original paragraph with the new one
-        paragraph.Parent.ReplaceChild(newParagraph, paragraph);
-        Console.WriteLine("Replaced original paragraph with new paragraph containing the image");
     }
     
     private void ProcessTablePlaceholders(OpenXmlPart part)

@@ -42,6 +42,7 @@ This will resize the image to a maximum width of 200 pixels and a maximum height
 - Make sure there are no spaces in the dimensions: `200x100` (correct) vs `200 x 100` (incorrect)
 - The full syntax should look exactly like: `{% SupervisorSignature:200x100 %}`
 
+
 ### Adding Images to Template Data
 
 ```csharp
