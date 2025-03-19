@@ -51,6 +51,12 @@ public struct WordTemplateData
             return Images.ContainsKey(key);
         }
         
+        // Method to get an image path
+        public string GetImage(string key)
+        {
+            return Images.ContainsKey(key) ? Images[key] : null;
+        }
+        
         // Method to add a table
         public void AddTable(string tableName, List<Dictionary<string, string>> tableData)
         {

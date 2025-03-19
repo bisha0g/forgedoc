@@ -165,49 +165,113 @@ public class WordTemplate
     
     private void ProcessImagePlaceholders(OpenXmlPart part)
     {
-        if (part?.RootElement == null || _data.Images == null || !_data.Images.Any()) return;
-
-        // Find all paragraphs that contain image placeholders
-        foreach (var paragraph in part.RootElement.Descendants<Paragraph>().ToList())
+        Console.WriteLine("Processing image placeholders");
+        
+        // Check if we have any images to process
+        if (part?.RootElement == null || _data.Images == null || !_data.Images.Any())
         {
-            // Get the text content of the paragraph
-            string paragraphText = GetParagraphText(paragraph);
+            Console.WriteLine("No images to process or document has no root element");
+            return;
+        }
+        
+        // Get all paragraphs in the document
+        var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
+        Console.WriteLine($"Found {paragraphs.Count} paragraphs");
+        
+        foreach (var paragraph in paragraphs)
+        {
+            // Get the text of the paragraph
+            string paragraphText = paragraph.InnerText;
+            Console.WriteLine($"Paragraph text: {paragraphText}");
             
-            // Check for image placeholders in both formats: {% key %} and {{image:key}}
-            var imagePlaceholderPatterns = new List<Regex>
-            {
-                new Regex(@"\{%\s*([^}]+)\s*%\}"),           // Format: {% key %}
-                new Regex(@"\{\{image:([^}]+)\}\}")          // Format: {{image:key}}
-            };
+            // Check if the paragraph contains an image placeholder
+            // Support both {% key %} and {{image:key}} formats
+            var imagePlaceholders = new List<string>();
             
-            foreach (var pattern in imagePlaceholderPatterns)
+            // Find {% key %} or {% key:widthxheight %} style placeholders
+            // Updated regex to match the format {% SupervisorSignature:200x100 %}
+            var matches = Regex.Matches(paragraphText, @"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+            foreach (Match match in matches)
             {
-                var matches = pattern.Matches(paragraphText);
+                imagePlaceholders.Add(match.Value);
+                Console.WriteLine($"Found image placeholder: {match.Value}");
+            }
+            
+            // Find {{image:key}} style placeholders
+            var altMatches = Regex.Matches(paragraphText, @"\{\{image:([^}]+)\}\}");
+            foreach (Match match in altMatches)
+            {
+                imagePlaceholders.Add(match.Value);
+                Console.WriteLine($"Found alternative image placeholder: {match.Value}");
+            }
+            
+            Console.WriteLine($"Found {imagePlaceholders.Count} image placeholders in paragraph");
+            
+            // Process each image placeholder
+            foreach (string placeholder in imagePlaceholders)
+            {
+                string key;
                 
-                if (matches.Count > 0)
+                // Extract the key from the placeholder
+                if (placeholder.StartsWith("{%"))
                 {
-                    Console.WriteLine($"Found {matches.Count} image placeholders in paragraph: {paragraphText}");
-                    
-                    foreach (Match match in matches)
+                    // Extract key from {% key %} or {% key:widthxheight %}
+                    var match = Regex.Match(placeholder, @"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+                    if (!match.Success)
                     {
-                        string key = match.Groups[1].Value.Trim();
-                        Console.WriteLine($"Processing image key: '{key}'");
-                        
-                        // Check if we have an image for this key
-                        if (_data.HasImage(key) && File.Exists(_data.Images[key]))
-                        {
-                            // Get the image path
-                            string imagePath = _data.Images[key];
-                            Console.WriteLine($"Found image at path: {imagePath}");
-                            
-                            // Insert the image
-                            InsertImageInParagraph(part, paragraph, imagePath, match.Value);
-                        }
-                        else
-                        {
-                            Console.WriteLine($"Image not found for key: '{key}'. HasImage: {_data.HasImage(key)}, Path exists: {(_data.HasImage(key) ? File.Exists(_data.Images[key]).ToString() : "N/A")}");
-                        }
+                        // Try alternate format with spaces
+                        match = Regex.Match(placeholder, @"\{%\s*([^:}]+)\s*:\s*(\d+)\s*x\s*(\d+)\s*%\}");
                     }
+                    
+                    if (match.Success)
+                    {
+                        key = match.Groups[1].Value.Trim();
+                        Console.WriteLine($"Extracted key from placeholder: '{key}'");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Failed to extract key from placeholder: {placeholder}");
+                        continue;
+                    }
+                }
+                else
+                {
+                    // Extract key from {{image:key}}
+                    var match = Regex.Match(placeholder, @"\{\{image:([^}]+)\}\}");
+                    if (match.Success)
+                    {
+                        key = match.Groups[1].Value.Trim();
+                        Console.WriteLine($"Extracted key from alternative placeholder: '{key}'");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Failed to extract key from placeholder: {placeholder}");
+                        continue;
+                    }
+                }
+                
+                Console.WriteLine($"Processing image placeholder: {placeholder}, key: {key}");
+                
+                // Check if the image exists
+                if (_data.HasImage(key))
+                {
+                    string imagePath = _data.GetImage(key);
+                    Console.WriteLine($"Found image path: {imagePath}");
+                    
+                    // Check if the image file exists
+                    if (File.Exists(imagePath))
+                    {
+                        // Insert the image into the paragraph
+                        InsertImageInParagraph(part, paragraph, imagePath, placeholder);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"WARNING: Image file not found: {imagePath}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"WARNING: No image found for key: {key}");
                 }
             }
         }
@@ -251,12 +315,65 @@ public class WordTemplate
             
             using (var img = System.Drawing.Image.FromFile(imagePath))
             {
+                // Check if we need to resize the image
+                double maxWidthInPixels = 400; // Default max width in pixels
+                double maxHeightInPixels = 300; // Default max height in pixels
+                
+                Console.WriteLine($"Checking for size in placeholder: {placeholderText}");
+                
+                // Try different regex patterns to match the size
+                var sizeMatch = Regex.Match(placeholderText, @"\{%\s*([^:}]+):(\d+)x(\d+)\s*%\}");
+                if (!sizeMatch.Success)
+                {
+                    // Try alternate format with spaces
+                    sizeMatch = Regex.Match(placeholderText, @"\{%\s*([^:}]+)\s*:\s*(\d+)\s*x\s*(\d+)\s*%\}");
+                }
+                
+                if (sizeMatch.Success && sizeMatch.Groups.Count > 2)
+                {
+                    Console.WriteLine($"Size match groups: {sizeMatch.Groups.Count}, Group 1: '{sizeMatch.Groups[1].Value}', Group 2: '{sizeMatch.Groups[2].Value}', Group 3: '{sizeMatch.Groups[3].Value}'");
+                    
+                    // Extract width and height from the placeholder
+                    if (int.TryParse(sizeMatch.Groups[2].Value, out int width))
+                    {
+                        maxWidthInPixels = width;
+                        Console.WriteLine($"Parsed width: {maxWidthInPixels}");
+                    }
+                    
+                    if (int.TryParse(sizeMatch.Groups[3].Value, out int height))
+                    {
+                        maxHeightInPixels = height;
+                        Console.WriteLine($"Parsed height: {maxHeightInPixels}");
+                    }
+                    
+                    Console.WriteLine($"Found size in placeholder: {maxWidthInPixels}x{maxHeightInPixels}");
+                }
+                else
+                {
+                    Console.WriteLine($"No size information found in placeholder or could not parse: {placeholderText}");
+                }
+                
+                // Calculate new dimensions while maintaining aspect ratio
+                double scale = 1.0;
+                if (img.Width > maxWidthInPixels || img.Height > maxHeightInPixels)
+                {
+                    double widthScale = maxWidthInPixels / img.Width;
+                    double heightScale = maxHeightInPixels / img.Height;
+                    scale = Math.Min(widthScale, heightScale);
+                    
+                    Console.WriteLine($"Resizing image with scale factor: {scale}");
+                }
+                
+                int newWidth = (int)(img.Width * scale);
+                int newHeight = (int)(img.Height * scale);
+                
                 // Convert pixels to EMUs (English Metric Units)
                 // 1 inch = 914400 EMUs, 1 inch = 96 pixels (default)
                 double emuPerPixel = 9525;
-                imageWidthEmu = (int)(img.Width * emuPerPixel);
-                imageHeightEmu = (int)(img.Height * emuPerPixel);
-                Console.WriteLine($"Image dimensions: {img.Width}x{img.Height} pixels, {imageWidthEmu}x{imageHeightEmu} EMUs");
+                imageWidthEmu = (int)(newWidth * emuPerPixel);
+                imageHeightEmu = (int)(newHeight * emuPerPixel);
+                Console.WriteLine($"Original dimensions: {img.Width}x{img.Height} pixels");
+                Console.WriteLine($"New dimensions: {newWidth}x{newHeight} pixels, {imageWidthEmu}x{imageHeightEmu} EMUs");
                 
                 // Determine image type based on format
                 imageType = GetImagePartTypeFromFormat(img.RawFormat);

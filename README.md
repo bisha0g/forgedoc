@@ -20,6 +20,28 @@ ForgeDoc supports inserting images into Word documents using a special placehold
 
 Where `imageKey` is a key that references an image path you've added to the template data.
 
+### Image Resizing
+
+You can specify custom dimensions for your images using the following syntax:
+
+```text
+{% imageKey:widthxheight %}
+```
+
+For example:
+
+```text
+{% Logo:200x100 %}
+```
+
+This will resize the image to a maximum width of 200 pixels and a maximum height of 100 pixels, while maintaining the aspect ratio. If you don't specify dimensions, the default maximum size is 400x300 pixels.
+
+#### Important Notes on Image Resizing Syntax
+
+- Make sure there are no spaces between the key and the colon: `{% Logo:200x100 %}` (correct) vs `{% Logo: 200x100 %}` (incorrect)
+- Make sure there are no spaces in the dimensions: `200x100` (correct) vs `200 x 100` (incorrect)
+- The full syntax should look exactly like: `{% SupervisorSignature:200x100 %}`
+
 ### Adding Images to Template Data
 
 ```csharp
