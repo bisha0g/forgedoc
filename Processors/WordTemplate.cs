@@ -12,6 +12,8 @@ using ForgeDoc.Structs;
 using A = DocumentFormat.OpenXml.Drawing;
 using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
+using System.Xml;
+using HtmlAgilityPack;
 
 namespace ForgeDoc.Processors;
 
@@ -119,8 +121,19 @@ public class WordTemplate
                 string key = $"{{{{{placeholder.Key}}}}}";
                 if (modifiedText.Contains(key))
                 {
-                    modifiedText = modifiedText.Replace(key, placeholder.Value ?? string.Empty);
-                    containsPlaceholder = true;
+                    // Check if the placeholder value contains HTML
+                    if (placeholder.Value != null && IsHtml(placeholder.Value))
+                    {
+                        // Mark that we found a placeholder, but don't replace it yet
+                        // We'll handle HTML separately
+                        containsPlaceholder = true;
+                    }
+                    else
+                    {
+                        // Regular text replacement
+                        modifiedText = modifiedText.Replace(key, placeholder.Value ?? string.Empty);
+                        containsPlaceholder = true;
+                    }
                 }
             }
 
@@ -130,8 +143,43 @@ public class WordTemplate
                 // Clear existing runs
                 paragraph.RemoveAllChildren<Run>();
 
-                // Add a new run with the modified text
-                paragraph.AppendChild(new Run(new Text(modifiedText)));
+                // Process the text for each placeholder, handling HTML content
+                foreach (var placeholder in _data.Placeholders)
+                {
+                    string key = $"{{{{{placeholder.Key}}}}}";
+                    if (modifiedText.Contains(key))
+                    {
+                        if (placeholder.Value != null && IsHtml(placeholder.Value))
+                        {
+                            // Split the text at the placeholder
+                            int placeholderIndex = modifiedText.IndexOf(key);
+                            string beforePlaceholder = modifiedText.Substring(0, placeholderIndex);
+                            string afterPlaceholder = modifiedText.Substring(placeholderIndex + key.Length);
+
+                            // Add text before the placeholder
+                            if (!string.IsNullOrEmpty(beforePlaceholder))
+                            {
+                                paragraph.AppendChild(new Run(new Text(beforePlaceholder)));
+                            }
+
+                            // Add the HTML content
+                            AppendHtmlToRun(paragraph, placeholder.Value, null);
+
+                            // Update the modified text to continue processing
+                            modifiedText = afterPlaceholder;
+                        }
+                        else
+                        {
+                            // Regular replacement already handled above
+                        }
+                    }
+                }
+
+                // Add any remaining text
+                if (!string.IsNullOrEmpty(modifiedText))
+                {
+                    paragraph.AppendChild(new Run(new Text(modifiedText)));
+                }
             }
             else
             {
@@ -143,24 +191,409 @@ public class WordTemplate
                     {
                         string originalText = text.Text;
                         string textModified = originalText;
-
+                        bool hasHtmlPlaceholder = false;
+                        
+                        // First pass: check if there are any HTML placeholders
                         foreach (var placeholder in _data.Placeholders)
                         {
                             string key = $"{{{{{placeholder.Key}}}}}";
-                            if (textModified.Contains(key))
+                            if (textModified.Contains(key) && placeholder.Value != null && IsHtml(placeholder.Value))
                             {
-                                textModified = textModified.Replace(key, placeholder.Value ?? string.Empty);
+                                hasHtmlPlaceholder = true;
+                                break;
                             }
                         }
-
-                        if (originalText != textModified)
+                        
+                        if (hasHtmlPlaceholder)
                         {
-                            text.Text = textModified;
+                            // If there's HTML content, we need to handle the entire run differently
+                            var parentRun = text.Parent;
+                            if (parentRun != null)
+                            {
+                                var runProperties = parentRun.Elements<RunProperties>().FirstOrDefault()?.CloneNode(true);
+                                
+                                // Get the text and process each placeholder
+                                string runText = originalText;
+                                foreach (var placeholder in _data.Placeholders)
+                                {
+                                    string key = $"{{{{{placeholder.Key}}}}}";
+                                    if (runText.Contains(key))
+                                    {
+                                        // Split at the placeholder
+                                        int placeholderIndex = runText.IndexOf(key);
+                                        string beforePlaceholder = runText.Substring(0, placeholderIndex);
+                                        string afterPlaceholder = runText.Substring(placeholderIndex + key.Length);
+                                        
+                                        // Add text before placeholder
+                                        if (!string.IsNullOrEmpty(beforePlaceholder))
+                                        {
+                                            var newRun = new Run();
+                                            if (runProperties != null)
+                                                newRun.AppendChild(runProperties.CloneNode(true));
+                                            newRun.AppendChild(new Text(beforePlaceholder));
+                                            parentRun.InsertBeforeSelf(newRun);
+                                        }
+                                        
+                                        // Add HTML content
+                                        AppendHtmlToRun(parentRun.Parent, placeholder.Value, null);
+                                        
+                                        // Update text for next iteration
+                                        runText = afterPlaceholder;
+                                    }
+                                }
+                                
+                                // Add any remaining text
+                                if (!string.IsNullOrEmpty(runText))
+                                {
+                                    var newRun = new Run();
+                                    if (runProperties != null)
+                                        newRun.AppendChild(runProperties.CloneNode(true));
+                                    newRun.AppendChild(new Text(runText));
+                                    parentRun.InsertBeforeSelf(newRun);
+                                }
+                                
+                                // Remove the original run
+                                parentRun.Remove();
+                            }
+                        }
+                        else
+                        {
+                            // Regular text replacement
+                            foreach (var placeholder in _data.Placeholders)
+                            {
+                                string key = $"{{{{{placeholder.Key}}}}}";
+                                if (textModified.Contains(key))
+                                {
+                                    textModified = textModified.Replace(key, placeholder.Value ?? string.Empty);
+                                }
+                            }
+
+                            if (originalText != textModified)
+                            {
+                                text.Text = textModified;
+                            }
                         }
                     }
                 }
             }
         }
+    }
+    
+    private bool IsHtml(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+            
+        // Check for common HTML tags
+        return text.Contains("<p") || text.Contains("<div") || text.Contains("<span") || 
+               text.Contains("<br") || text.Contains("<b>") || text.Contains("<i>") || 
+               text.Contains("<u>") || text.Contains("<strong") || text.Contains("<em") ||
+               text.Contains("</p>") || text.Contains("</div>") || text.Contains("</span>") || 
+               text.Contains("</b>") || text.Contains("</i>") || text.Contains("</u>") ||
+               text.Contains("</strong>") || text.Contains("</em>");
+    }
+    
+    private void AppendHtmlToParagraph(OpenXmlElement parentElement, string htmlContent)
+    {
+        try
+        {
+            // Load the HTML content
+            var htmlDoc = new HtmlDocument();
+            htmlDoc.LoadHtml(htmlContent);
+            
+            // Process the HTML nodes
+            foreach (var node in htmlDoc.DocumentNode.ChildNodes)
+            {
+                ProcessHtmlNode(parentElement, node, null);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing HTML: {ex.Message}");
+            // Fallback: add as plain text
+            var run = new Run();
+            run.AppendChild(new Text(htmlContent));
+            parentElement.AppendChild(run);
+        }
+    }
+    
+    private void AppendHtmlToRun(OpenXmlElement parentElement, string htmlContent, RunProperties baseProperties = null)
+    {
+        try
+        {
+            // Load the HTML content
+            var htmlDoc = new HtmlDocument();
+            htmlDoc.LoadHtml(htmlContent);
+            
+            // Process the HTML nodes
+            foreach (var node in htmlDoc.DocumentNode.ChildNodes)
+            {
+                var run = new Run();
+                if (baseProperties != null)
+                    run.AppendChild(baseProperties.CloneNode(true));
+                    
+                ProcessHtmlNode(parentElement, node, baseProperties);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing HTML: {ex.Message}");
+            // Fallback: add as plain text
+            var run = new Run();
+            if (baseProperties != null)
+                run.AppendChild(baseProperties.CloneNode(true));
+            run.AppendChild(new Text(htmlContent));
+            parentElement.AppendChild(run);
+        }
+    }
+    
+    private void ProcessHtmlNode(OpenXmlElement parent, HtmlNode node, RunProperties baseProperties)
+    {
+        if (node.NodeType == HtmlNodeType.Text)
+        {
+            // Create a run with the text content
+            var run = new Run();
+            if (baseProperties != null)
+                run.AppendChild(baseProperties.CloneNode(true));
+                
+            // Decode HTML entities
+            string textContent = System.Net.WebUtility.HtmlDecode(node.InnerText);
+            
+            // Check if the text contains RTL characters
+            bool isRtlText = ContainsRtlText(textContent);
+            
+            // If RTL text, add RTL properties to the run
+            if (isRtlText)
+            {
+                var runProps = run.GetFirstChild<RunProperties>();
+                if (runProps == null)
+                {
+                    runProps = new RunProperties();
+                    run.PrependChild(runProps);
+                }
+                
+                runProps.AppendChild(new RightToLeftText() { Val = OnOffValue.FromBoolean(true) });
+            }
+            
+            run.AppendChild(new Text(textContent) { Space = SpaceProcessingModeValues.Preserve });
+            
+            // Add to parent
+            parent.AppendChild(run);
+            return;
+        }
+        
+        // Process different HTML elements
+        switch (node.Name.ToLower())
+        {
+            case "p":
+                // For paragraphs in a table cell, we need to handle them differently
+                if (parent is TableCell)
+                {
+                    var paragraph = new Paragraph();
+                    
+                    // Apply paragraph properties based on style attributes
+                    var pPr = new ParagraphProperties();
+                    
+                    // Handle text alignment
+                    if (node.Attributes["style"] != null)
+                    {
+                        string style = node.Attributes["style"].Value;
+                        if (style.Contains("text-align: right") || style.Contains("text-align:right"))
+                        {
+                            pPr.AppendChild(new Justification() { Val = JustificationValues.Right });
+                        }
+                        else if (style.Contains("text-align: center") || style.Contains("text-align:center"))
+                        {
+                            pPr.AppendChild(new Justification() { Val = JustificationValues.Center });
+                        }
+                        else if (style.Contains("text-align: justify") || style.Contains("text-align:justify"))
+                        {
+                            pPr.AppendChild(new Justification() { Val = JustificationValues.Both });
+                        }
+                        
+                        // Handle RTL text direction
+                        if (style.Contains("direction: rtl") || style.Contains("direction:rtl"))
+                        {
+                            pPr.AppendChild(new BiDi() { Val = OnOffValue.FromBoolean(true) });
+                        }
+                    }
+                    
+                    // Check if the text contains RTL characters (Arabic, Hebrew, etc.)
+                    bool containsRtlText = ContainsRtlText(node.InnerText);
+                    if (containsRtlText)
+                    {
+                        pPr.AppendChild(new BiDi() { Val = OnOffValue.FromBoolean(true) });
+                    }
+                    
+                    paragraph.AppendChild(pPr);
+                    
+                    // Process child nodes
+                    foreach (var childNode in node.ChildNodes)
+                    {
+                        ProcessHtmlNode(paragraph, childNode, baseProperties);
+                    }
+                    
+                    parent.AppendChild(paragraph);
+                }
+                else if (parent is Paragraph)
+                {
+                    // If we're already in a paragraph, just process the children
+                    foreach (var childNode in node.ChildNodes)
+                    {
+                        ProcessHtmlNode(parent, childNode, baseProperties);
+                    }
+                }
+                break;
+                
+            case "br":
+                // Add a line break
+                var breakRun = new Run();
+                if (baseProperties != null)
+                    breakRun.AppendChild(baseProperties.CloneNode(true));
+                breakRun.AppendChild(new Break());
+                parent.AppendChild(breakRun);
+                break;
+                
+            case "b":
+            case "strong":
+                // Bold text
+                foreach (var childNode in node.ChildNodes)
+                {
+                    var boldRun = new Run();
+                    var boldProps = baseProperties != null ? baseProperties.CloneNode(true) as RunProperties : new RunProperties();
+                    boldProps.AppendChild(new Bold());
+                    boldRun.AppendChild(boldProps);
+                    
+                    if (childNode.NodeType == HtmlNodeType.Text)
+                    {
+                        boldRun.AppendChild(new Text(System.Net.WebUtility.HtmlDecode(childNode.InnerText)));
+                        parent.AppendChild(boldRun);
+                    }
+                    else
+                    {
+                        ProcessHtmlNode(parent, childNode, boldProps);
+                    }
+                }
+                break;
+                
+            case "i":
+            case "em":
+                // Italic text
+                foreach (var childNode in node.ChildNodes)
+                {
+                    var italicRun = new Run();
+                    var italicProps = baseProperties != null ? baseProperties.CloneNode(true) as RunProperties : new RunProperties();
+                    italicProps.AppendChild(new Italic());
+                    italicRun.AppendChild(italicProps);
+                    
+                    if (childNode.NodeType == HtmlNodeType.Text)
+                    {
+                        italicRun.AppendChild(new Text(System.Net.WebUtility.HtmlDecode(childNode.InnerText)));
+                        parent.AppendChild(italicRun);
+                    }
+                    else
+                    {
+                        ProcessHtmlNode(parent, childNode, italicProps);
+                    }
+                }
+                break;
+                
+            case "u":
+                // Underlined text
+                foreach (var childNode in node.ChildNodes)
+                {
+                    var underlineRun = new Run();
+                    var underlineProps = baseProperties != null ? baseProperties.CloneNode(true) as RunProperties : new RunProperties();
+                    underlineProps.AppendChild(new Underline() { Val = UnderlineValues.Single });
+                    underlineRun.AppendChild(underlineProps);
+                    
+                    if (childNode.NodeType == HtmlNodeType.Text)
+                    {
+                        underlineRun.AppendChild(new Text(System.Net.WebUtility.HtmlDecode(childNode.InnerText)));
+                        parent.AppendChild(underlineRun);
+                    }
+                    else
+                    {
+                        ProcessHtmlNode(parent, childNode, underlineProps);
+                    }
+                }
+                break;
+                
+            case "span":
+                // Handle span with style attributes
+                var spanProps = baseProperties != null ? baseProperties.CloneNode(true) as RunProperties : new RunProperties();
+                
+                if (node.Attributes["style"] != null)
+                {
+                    string style = node.Attributes["style"].Value;
+                    
+                    // Handle text color
+                    var colorMatch = Regex.Match(style, @"color:\s*#([0-9A-Fa-f]{6})");
+                    if (colorMatch.Success)
+                    {
+                        string colorHex = colorMatch.Groups[1].Value;
+                        spanProps.AppendChild(new DocumentFormat.OpenXml.Wordprocessing.Color() { Val = colorHex });
+                    }
+                    
+                    // Handle font size
+                    var fontSizeMatch = Regex.Match(style, @"font-size:\s*(\d+)pt");
+                    if (fontSizeMatch.Success)
+                    {
+                        int fontSize = int.Parse(fontSizeMatch.Groups[1].Value);
+                        spanProps.AppendChild(new FontSize() { Val = (fontSize * 2).ToString() }); // Convert pt to half-points
+                    }
+                    
+                    // Handle font family
+                    var fontFamilyMatch = Regex.Match(style, @"font-family:\s*([^;]+)");
+                    if (fontFamilyMatch.Success)
+                    {
+                        string fontFamily = fontFamilyMatch.Groups[1].Value.Trim().Trim('\'', '"');
+                        spanProps.AppendChild(new RunFonts() { Ascii = fontFamily, HighAnsi = fontFamily });
+                    }
+                }
+                
+                foreach (var childNode in node.ChildNodes)
+                {
+                    if (childNode.NodeType == HtmlNodeType.Text)
+                    {
+                        var spanRun = new Run();
+                        spanRun.AppendChild(spanProps.CloneNode(true));
+                        spanRun.AppendChild(new Text(System.Net.WebUtility.HtmlDecode(childNode.InnerText)));
+                        parent.AppendChild(spanRun);
+                    }
+                    else
+                    {
+                        ProcessHtmlNode(parent, childNode, spanProps);
+                    }
+                }
+                break;
+                
+            case "div":
+                // For divs, process children
+                foreach (var childNode in node.ChildNodes)
+                {
+                    ProcessHtmlNode(parent, childNode, baseProperties);
+                }
+                break;
+                
+            default:
+                // For other elements, just process the inner text
+                if (!string.IsNullOrWhiteSpace(node.InnerText))
+                {
+                    var defaultRun = new Run();
+                    if (baseProperties != null)
+                        defaultRun.AppendChild(baseProperties.CloneNode(true));
+                    defaultRun.AppendChild(new Text(System.Net.WebUtility.HtmlDecode(node.InnerText)));
+                    parent.AppendChild(defaultRun);
+                }
+                break;
+        }
+    }
+    
+    private bool ContainsRtlText(string text)
+    {
+        // Check for RTL characters (Arabic, Hebrew, etc.)
+        return text.Any(c => c >= 0x0590 && c <= 0x05FF || c >= 0x0600 && c <= 0x06FF || c >= 0xFB50 && c <= 0xFDFF || c >= 0xFE70 && c <= 0xFEFF);
     }
     
     private void ProcessImagePlaceholders(OpenXmlPart part)
@@ -577,113 +1010,6 @@ public class WordTemplate
                 InsertImageInParagraph(part, paragraph, imagePath, placeholder);
             }
         }
-    }
-    
-    private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
-    {
-        // Create a unique ID for the image
-        string imageId = $"image{Guid.NewGuid()}";
-        
-        // Determine file extension based on image type
-        string fileExtension = GetFileExtensionFromImageType(imageType);
-        
-        // Create a new Drawing object
-        Drawing drawing = new Drawing(
-            new DW.Inline(
-                new DW.Extent() { Cx = imageSizeWidth, Cy = imageSizeHeight },
-                new DW.EffectExtent()
-                {
-                    LeftEdge = 0L,
-                    TopEdge = 0L,
-                    RightEdge = 0L,
-                    BottomEdge = 0L
-                },
-                new DW.DocProperties()
-                {
-                    Id = (UInt32Value)1U,
-                    Name = imageId
-                },
-                new DW.NonVisualGraphicFrameDrawingProperties(
-                    new A.GraphicFrameLocks() { NoChangeAspect = true }),
-                new A.Graphic(
-                    new A.GraphicData(
-                        new PIC.Picture(
-                            new PIC.NonVisualPictureProperties(
-                                new PIC.NonVisualDrawingProperties()
-                                {
-                                    Id = (UInt32Value)0U,
-                                    Name = $"{imageId}{fileExtension}"
-                                },
-                                new PIC.NonVisualPictureDrawingProperties()),
-                            new PIC.BlipFill(
-                                new A.Blip(
-                                    new A.BlipExtensionList(
-                                        new A.BlipExtension()
-                                        {
-                                            Uri = "{28A0092B-C50C-407E-A947-70E740481C1C}"
-                                        })
-                                )
-                                {
-                                    Embed = getIdOfPart,
-                                    CompressionState = A.BlipCompressionValues.Print
-                                },
-                                new A.Stretch(
-                                    new A.FillRectangle())),
-                            new PIC.ShapeProperties(
-                                new A.Transform2D(
-                                    new A.Offset() { X = 0L, Y = 0L },
-                                    new A.Extents() { Cx = imageSizeWidth, Cy = imageSizeHeight }),
-                                new A.PresetGeometry(
-                                    new A.AdjustValueList()
-                                )
-                                { Preset = A.ShapeTypeValues.Rectangle }))
-                    )
-                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
-            )
-            {
-                DistanceFromTop = (UInt32Value)0U,
-                DistanceFromBottom = (UInt32Value)0U,
-                DistanceFromLeft = (UInt32Value)0U,
-                DistanceFromRight = (UInt32Value)0U,
-                EditId = "50D07946"
-            });
-            
-        return drawing;
-    }
-    
-    private string GetFileExtensionFromImageType(ImagePartType imageType)
-    {
-        switch (imageType)
-        {
-            case ImagePartType.Jpeg:
-                return ".jpg";
-            case ImagePartType.Png:
-                return ".png";
-            case ImagePartType.Gif:
-                return ".gif";
-            case ImagePartType.Bmp:
-                return ".bmp";
-            case ImagePartType.Tiff:
-                return ".tiff";
-            default:
-                return ".jpg";
-        }
-    }
-    
-    private ImagePartType GetImagePartTypeFromFormat(System.Drawing.Imaging.ImageFormat format)
-    {
-        if (format.Equals(System.Drawing.Imaging.ImageFormat.Jpeg))
-            return ImagePartType.Jpeg;
-        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Png))
-            return ImagePartType.Png;
-        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Gif))
-            return ImagePartType.Gif;
-        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Bmp))
-            return ImagePartType.Bmp;
-        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Tiff))
-            return ImagePartType.Tiff;
-        else
-            return ImagePartType.Jpeg; // Default to JPEG
     }
     
     private void ProcessTablePlaceholders(OpenXmlPart part)
@@ -1104,13 +1430,50 @@ public class WordTemplate
         foreach (var rowData in tableData)
         {
             Paragraph paragraph = new Paragraph();
-            Run run = new Run();
             
-            // Create text with all the data
-            string text = string.Join(", ", rowData.Select(kv => $"{kv.Key}: {kv.Value}"));
-            run.AppendChild(new Text(text));
+            // Check if any values contain HTML
+            bool hasHtmlContent = rowData.Values.Any(v => v != null && IsHtml(v));
             
-            paragraph.AppendChild(run);
+            if (hasHtmlContent)
+            {
+                // Create text with all the data, handling HTML content
+                foreach (var kv in rowData)
+                {
+                    // Add the key
+                    Run keyRun = new Run();
+                    keyRun.AppendChild(new Text($"{kv.Key}: "));
+                    paragraph.AppendChild(keyRun);
+                    
+                    // Add the value, handling HTML if needed
+                    if (kv.Value != null && IsHtml(kv.Value))
+                    {
+                        AppendHtmlToParagraph(paragraph, kv.Value);
+                    }
+                    else
+                    {
+                        Run valueRun = new Run();
+                        valueRun.AppendChild(new Text(kv.Value ?? string.Empty));
+                        paragraph.AppendChild(valueRun);
+                    }
+                    
+                    // Add separator between key-value pairs
+                    if (kv.Key != rowData.Keys.Last())
+                    {
+                        Run separatorRun = new Run();
+                        separatorRun.AppendChild(new Text(", "));
+                        paragraph.AppendChild(separatorRun);
+                    }
+                }
+            }
+            else
+            {
+                // Create text with all the data (no HTML)
+                Run run = new Run();
+                string text = string.Join(", ", rowData.Select(kv => $"{kv.Key}: {kv.Value}"));
+                run.AppendChild(new Text(text));
+                paragraph.AppendChild(run);
+            }
+            
             cell.AppendChild(paragraph);
         }
     }
@@ -1120,99 +1483,18 @@ public class WordTemplate
         // Clear existing runs
         paragraph.RemoveAllChildren();
         
-        // Add a new run with the new text
-        Run run = new Run();
-        run.AppendChild(new Text(newText));
-        paragraph.AppendChild(run);
-    }
-    
-    private void ProcessStandardTablePlaceholders(OpenXmlPart part)
-    {
-        // Get all paragraphs in the document
-        var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
-        
-        foreach (var tableData in _data.Tables)
+        // Check if the new text contains HTML
+        if (IsHtml(newText))
         {
-            string tableName = tableData.Key;
-            List<Dictionary<string, string>> data = tableData.Value;
-            
-            // Skip if no data
-            if (data == null || !data.Any()) continue;
-            
-            string startTag = $"{{{{#docTable {tableName}}}}}";
-            string endTag = "{{/docTable}}";
-            
-            int startIndex = -1;
-            int endIndex = -1;
-            
-            // Find the start and end tags in the paragraphs
-            for (int i = 0; i < paragraphs.Count; i++)
-            {
-                var paragraph = paragraphs[i];
-                string paragraphText = GetParagraphText(paragraph);
-                
-                if (paragraphText.Contains(startTag))
-                {
-                    startIndex = i;
-                }
-                
-                if (paragraphText.Contains(endTag) && startIndex != -1 && i >= startIndex)
-                {
-                    endIndex = i;
-                    break;
-                }
-            }
-            
-            // If we found both start and end tags
-            if (startIndex != -1 && endIndex != -1)
-            {
-                // Extract the template content between the tags
-                var templateContent = new StringBuilder();
-                for (int i = startIndex; i <= endIndex; i++)
-                {
-                    templateContent.AppendLine(GetParagraphText(paragraphs[i]));
-                }
-                
-                // Create the table
-                Table table = CreateTable(templateContent.ToString(), tableData.Value);
-                
-                // Insert the table after the start paragraph
-                if (table != null)
-                {
-                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
-                }
-                
-                // Remove the paragraphs that contained the table template
-                for (int i = endIndex; i >= startIndex; i--)
-                {
-                    paragraphs[i].Remove();
-                }
-            }
-            // If we only found the start tag but not the end tag
-            else if (startIndex != -1)
-            {
-                // Check if the start and end tags are in the same paragraph
-                string paragraphText = GetParagraphText(paragraphs[startIndex]);
-                int startTagIndex = paragraphText.IndexOf(startTag);
-                int endTagIndex = paragraphText.IndexOf(endTag);
-                
-                if (startTagIndex != -1 && endTagIndex != -1 && endTagIndex > startTagIndex)
-                {
-                    // Extract the template content between the tags
-                    string templateContent = paragraphText.Substring(
-                        startTagIndex + startTag.Length,
-                        endTagIndex - startTagIndex - startTag.Length);
-                    
-                    // Create the table
-                    Table table = CreateTable(templateContent, tableData.Value);
-                    
-                    // Insert the table after the paragraph
-                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
-                    
-                    // Remove the original paragraph
-                    paragraphs[startIndex].Remove();
-                }
-            }
+            // Process HTML content
+            AppendHtmlToParagraph(paragraph, newText);
+        }
+        else
+        {
+            // Add a new run with the new text
+            Run run = new Run();
+            run.AppendChild(new Text(newText));
+            paragraph.AppendChild(run);
         }
     }
     
@@ -1315,5 +1597,202 @@ public class WordTemplate
                 )
             )
         );
+    }
+    
+    private void ProcessStandardTablePlaceholders(OpenXmlPart part)
+    {
+        // Get all paragraphs in the document
+        var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
+        
+        foreach (var tableData in _data.Tables)
+        {
+            string tableName = tableData.Key;
+            List<Dictionary<string, string>> data = tableData.Value;
+            
+            // Skip if no data
+            if (data == null || !data.Any()) continue;
+            
+            string startTag = $"{{{{#docTable {tableName}}}}}";
+            string endTag = "{{/docTable}}";
+            
+            int startIndex = -1;
+            int endIndex = -1;
+            
+            // Find the start and end tags in the paragraphs
+            for (int i = 0; i < paragraphs.Count; i++)
+            {
+                var paragraph = paragraphs[i];
+                string paragraphText = GetParagraphText(paragraph);
+                
+                if (paragraphText.Contains(startTag))
+                {
+                    startIndex = i;
+                }
+                
+                if (paragraphText.Contains(endTag) && startIndex != -1 && i >= startIndex)
+                {
+                    endIndex = i;
+                    break;
+                }
+            }
+            
+            // If we found both start and end tags
+            if (startIndex != -1 && endIndex != -1)
+            {
+                // Extract the template content between the tags
+                var templateContent = new StringBuilder();
+                for (int i = startIndex; i <= endIndex; i++)
+                {
+                    templateContent.AppendLine(GetParagraphText(paragraphs[i]));
+                }
+                
+                // Create the table
+                Table table = CreateTable(templateContent.ToString(), tableData.Value);
+                
+                // Insert the table after the start paragraph
+                if (table != null)
+                {
+                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
+                }
+                
+                // Remove the paragraphs that contained the table template
+                for (int i = endIndex; i >= startIndex; i--)
+                {
+                    paragraphs[i].Remove();
+                }
+            }
+            // If we only found the start tag but not the end tag
+            else if (startIndex != -1)
+            {
+                // Check if the start and end tags are in the same paragraph
+                string paragraphText = GetParagraphText(paragraphs[startIndex]);
+                int startTagIndex = paragraphText.IndexOf(startTag);
+                int endTagIndex = paragraphText.IndexOf(endTag);
+                
+                if (startTagIndex != -1 && endTagIndex != -1 && endTagIndex > startTagIndex)
+                {
+                    // Extract the template content between the tags
+                    string templateContent = paragraphText.Substring(
+                        startTagIndex + startTag.Length,
+                        endTagIndex - startTagIndex - startTag.Length);
+                    
+                    // Create the table
+                    Table table = CreateTable(templateContent, tableData.Value);
+                    
+                    // Insert the table after the paragraph
+                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
+                    
+                    // Remove the original paragraph
+                    paragraphs[startIndex].Remove();
+                }
+            }
+        }
+    }
+    
+    private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
+    {
+        // Create a unique ID for the image
+        string imageId = $"image{Guid.NewGuid()}";
+        
+        // Determine file extension based on image type
+        string fileExtension = GetFileExtensionFromImageType(imageType);
+        
+        // Create a new Drawing object
+        Drawing drawing = new Drawing(
+            new DW.Inline(
+                new DW.Extent() { Cx = imageSizeWidth, Cy = imageSizeHeight },
+                new DW.EffectExtent()
+                {
+                    LeftEdge = 0L,
+                    TopEdge = 0L,
+                    RightEdge = 0L,
+                    BottomEdge = 0L
+                },
+                new DW.DocProperties()
+                {
+                    Id = (UInt32Value)1U,
+                    Name = imageId
+                },
+                new DW.NonVisualGraphicFrameDrawingProperties(
+                    new A.GraphicFrameLocks() { NoChangeAspect = true }),
+                new A.Graphic(
+                    new A.GraphicData(
+                        new PIC.Picture(
+                            new PIC.NonVisualPictureProperties(
+                                new PIC.NonVisualDrawingProperties()
+                                {
+                                    Id = (UInt32Value)0U,
+                                    Name = $"{imageId}{fileExtension}"
+                                },
+                                new PIC.NonVisualPictureDrawingProperties()),
+                            new PIC.BlipFill(
+                                new A.Blip(
+                                    new A.BlipExtensionList(
+                                        new A.BlipExtension()
+                                        {
+                                            Uri = "{28A0092B-C50C-407E-A947-70E740481C1C}"
+                                        })
+                                )
+                                {
+                                    Embed = getIdOfPart,
+                                    CompressionState = A.BlipCompressionValues.Print
+                                },
+                                new A.Stretch(
+                                    new A.FillRectangle())),
+                            new PIC.ShapeProperties(
+                                new A.Transform2D(
+                                    new A.Offset() { X = 0L, Y = 0L },
+                                    new A.Extents() { Cx = imageSizeWidth, Cy = imageSizeHeight }),
+                                new A.PresetGeometry(
+                                    new A.AdjustValueList()
+                                )
+                                { Preset = A.ShapeTypeValues.Rectangle }))
+                    )
+                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
+            )
+            {
+                DistanceFromTop = (UInt32Value)0U,
+                DistanceFromBottom = (UInt32Value)0U,
+                DistanceFromLeft = (UInt32Value)0U,
+                DistanceFromRight = (UInt32Value)0U,
+                EditId = "50D07946"
+            });
+            
+        return drawing;
+    }
+    
+    private string GetFileExtensionFromImageType(ImagePartType imageType)
+    {
+        switch (imageType)
+        {
+            case ImagePartType.Jpeg:
+                return ".jpg";
+            case ImagePartType.Png:
+                return ".png";
+            case ImagePartType.Gif:
+                return ".gif";
+            case ImagePartType.Bmp:
+                return ".bmp";
+            case ImagePartType.Tiff:
+                return ".tiff";
+            default:
+                return ".jpg";
+        }
+    }
+    
+    private ImagePartType GetImagePartTypeFromFormat(System.Drawing.Imaging.ImageFormat format)
+    {
+        if (format.Equals(System.Drawing.Imaging.ImageFormat.Jpeg))
+            return ImagePartType.Jpeg;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Png))
+            return ImagePartType.Png;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Gif))
+            return ImagePartType.Gif;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Bmp))
+            return ImagePartType.Bmp;
+        else if (format.Equals(System.Drawing.Imaging.ImageFormat.Tiff))
+            return ImagePartType.Tiff;
+        else
+            return ImagePartType.Jpeg; // Default to JPEG
     }
 }
