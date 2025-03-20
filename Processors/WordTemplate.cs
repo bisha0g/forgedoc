@@ -512,6 +512,73 @@ public class WordTemplate
         }
     }
     
+    private void ProcessCellImagePlaceholders(TableCell cell, Paragraph paragraph, Dictionary<string, string> dataItem = null)
+    {
+        if (_data.Images == null || !_data.Images.Any()) return;
+        
+        // Get the text of the paragraph
+        string paragraphText = GetParagraphText(paragraph);
+        
+        // Skip if no text
+        if (string.IsNullOrWhiteSpace(paragraphText)) return;
+        
+        // Find {% key %} or {% key:widthxheight %} style placeholders
+        var matches = Regex.Matches(paragraphText, @"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+        
+        foreach (Match match in matches)
+        {
+            string placeholder = match.Value;
+            string key = match.Groups[1].Value.Trim();
+            
+            // If we have a dataItem and this is a Signature placeholder, use the SignatureKey
+            if (dataItem != null && key == "Signature" && dataItem.ContainsKey("SignatureKey"))
+            {
+                key = dataItem["SignatureKey"];
+            }
+            
+            // Get the image path from the data
+            string imagePath = _data.GetImage(key);
+            if (string.IsNullOrEmpty(imagePath))
+            {
+                Console.WriteLine($"No image found for key: {key}");
+                continue;
+            }
+            
+            // Check if the image file exists
+            if (!File.Exists(imagePath))
+            {
+                Console.WriteLine($"Image file not found: {imagePath}");
+                continue;
+            }
+            
+            // Get the part containing the cell
+            OpenXmlPart part = cell.Ancestors<Document>().FirstOrDefault()?.MainDocumentPart;
+            if (part == null)
+            {
+                // Try to get the part from the header or footer
+                var header = cell.Ancestors<Header>().FirstOrDefault();
+                if (header != null)
+                {
+                    part = header.HeaderPart;
+                }
+                else
+                {
+                    var footer = cell.Ancestors<Footer>().FirstOrDefault();
+                    if (footer != null)
+                    {
+                        part = footer.FooterPart;
+                    }
+                }
+            }
+            
+            if (part != null)
+            {
+                // Insert the image in the paragraph
+                InsertImageInParagraph(part, paragraph, imagePath, placeholder);
+            }
+        }
+    }
+    
     private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
     {
         // Create a unique ID for the image
@@ -825,6 +892,36 @@ public class WordTemplate
                         }
                     }
                     
+                    // Check for image placeholders {% ImageKey %} in the cell
+                    var imagePlaceholderPattern = new Regex(@"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+                    var imageMatches = imagePlaceholderPattern.Matches(processedText);
+                    
+                    if (imageMatches.Count > 0)
+                    {
+                        // If we have image placeholders, we need to handle them specially
+                        foreach (Match match in imageMatches)
+                        {
+                            string fullPlaceholder = match.Value;
+                            string imageKey = match.Groups[1].Value.Trim();
+                            
+                            // Check if this is a SignatureKey reference from the data item
+                            if (dataItem.ContainsKey("SignatureKey") && imageKey == "Signature")
+                            {
+                                // Replace the placeholder with the actual image key
+                                string actualImageKey = dataItem["SignatureKey"];
+                                
+                                // Create a new placeholder with the actual key
+                                string newPlaceholder = fullPlaceholder.Replace(imageKey, actualImageKey);
+                                
+                                // Replace in the processed text
+                                processedText = processedText.Replace(fullPlaceholder, newPlaceholder);
+                                
+                                // Set the flag to indicate we made a replacement
+                                replacementMade = true;
+                            }
+                        }
+                    }
+                    
                     // If we made any replacements, update the paragraph text
                     if (replacementMade)
                     {
@@ -833,8 +930,18 @@ public class WordTemplate
                         processedText = processedText.Replace("{{/docTable}}", "");
                         processedText = processedText.Trim();
                         
+                        // Update the paragraph with the new text
                         ReplaceParagraphText(paragraph, processedText);
                     }
+                }
+            }
+            
+            // Process image placeholders in the row after all text replacements are done
+            foreach (var cell in newRow.Elements<TableCell>())
+            {
+                foreach (var paragraph in cell.Elements<Paragraph>())
+                {
+                    ProcessCellImagePlaceholders(cell, paragraph, dataItem);
                 }
             }
         }
@@ -892,11 +999,50 @@ public class WordTemplate
                         }
                         
                         // Check if this is an item placeholder (item.property)
-                        if (tableData[i].ContainsKey(placeholder))
+                        if (placeholder.StartsWith("item."))
                         {
-                            // Replace with the current row's value
+                            string itemProperty = placeholder.Substring(5); // Remove "item." prefix
+                            if (tableData[i].ContainsKey(itemProperty))
+                            {
+                                processedText = processedText.Replace($"{{{{{placeholder}}}}}", tableData[i][itemProperty]);
+                                replacementMade = true;
+                            }
+                        }
+                        // Check if this is a direct property name
+                        else if (tableData[i].ContainsKey(placeholder))
+                        {
                             processedText = processedText.Replace($"{{{{{placeholder}}}}}", tableData[i][placeholder]);
                             replacementMade = true;
+                        }
+                    }
+                    
+                    // Check for image placeholders {% ImageKey %} in the cell
+                    var imagePlaceholderPattern = new Regex(@"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+                    var imageMatches = imagePlaceholderPattern.Matches(processedText);
+                    
+                    if (imageMatches.Count > 0)
+                    {
+                        // If we have image placeholders, we need to handle them specially
+                        foreach (Match match in imageMatches)
+                        {
+                            string fullPlaceholder = match.Value;
+                            string imageKey = match.Groups[1].Value.Trim();
+                            
+                            // Check if this is a SignatureKey reference from the data item
+                            if (tableData[i].ContainsKey("SignatureKey") && imageKey == "Signature")
+                            {
+                                // Replace the placeholder with the actual image key
+                                string actualImageKey = tableData[i]["SignatureKey"];
+                                
+                                // Create a new placeholder with the actual key
+                                string newPlaceholder = fullPlaceholder.Replace(imageKey, actualImageKey);
+                                
+                                // Replace in the processed text
+                                processedText = processedText.Replace(fullPlaceholder, newPlaceholder);
+                                
+                                // Set the flag to indicate we made a replacement
+                                replacementMade = true;
+                            }
                         }
                     }
                     
@@ -908,8 +1054,18 @@ public class WordTemplate
                         processedText = processedText.Replace("{{/docTable}}", "");
                         processedText = processedText.Trim();
                         
+                        // Update the paragraph with the new text
                         ReplaceParagraphText(paragraph, processedText);
                     }
+                }
+            }
+            
+            // Process image placeholders in the row after all text replacements are done
+            foreach (var cell in newRow.Elements<TableCell>())
+            {
+                foreach (var paragraph in cell.Elements<Paragraph>())
+                {
+                    ProcessCellImagePlaceholders(cell, paragraph, tableData[i]);
                 }
             }
             
