@@ -11,12 +11,16 @@ public struct WordTemplateData
         // Each dictionary in the list represents a row, with keys as column names and values as cell contents
         public Dictionary<string, List<Dictionary<string, string>>> Tables { get; set; }
         
+        // Dictionary for special character placeholders with specific fonts
+        public Dictionary<string, (string Character, string Font)> SpecialCharacters { get; set; }
+        
         // Constructor to initialize all dictionaries
         public WordTemplateData(Dictionary<string, string> placeholders, Dictionary<string, string> images, Dictionary<string, List<Dictionary<string, string>>> tables = null)
         {
             Placeholders = placeholders ?? new Dictionary<string, string>();
             Tables = tables ?? new Dictionary<string, List<Dictionary<string, string>>>();
             Images = images ?? new Dictionary<string, string>();
+            SpecialCharacters = new Dictionary<string, (string Character, string Font)>();
         }
         
         // Default constructor
@@ -25,6 +29,7 @@ public struct WordTemplateData
             Placeholders = new Dictionary<string, string>();
             Tables = new Dictionary<string, List<Dictionary<string, string>>>();
             Images = new Dictionary<string, string>();
+            SpecialCharacters = new Dictionary<string, (string Character, string Font)>();
         }
         
         // Method to add a placeholder
@@ -88,5 +93,23 @@ public struct WordTemplateData
         public bool HasTable(string tableName)
         {
             return Tables.ContainsKey(tableName);
+        }
+        
+        // Method to add a special character with a specific font
+        public void AddSpecialCharacter(string key, string character, string font)
+        {
+            SpecialCharacters[key] = (character, font);
+        }
+        
+        // Method to check if a special character exists
+        public bool HasSpecialCharacter(string key)
+        {
+            return SpecialCharacters.ContainsKey(key);
+        }
+        
+        // Method to get a special character and its font
+        public (string Character, string Font) GetSpecialCharacter(string key)
+        {
+            return SpecialCharacters.ContainsKey(key) ? SpecialCharacters[key] : (null, null);
         }
     }

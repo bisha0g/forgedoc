@@ -115,6 +115,17 @@ public class WordTemplate
             bool containsPlaceholder = false;
             string modifiedText = combinedText;
 
+            // Check if the combined text contains any special character placeholders
+            foreach (var specialChar in _data.SpecialCharacters)
+            {
+                string key = $"{{{{{specialChar.Key}}}}}";
+                if (modifiedText.Contains(key))
+                {
+                    containsPlaceholder = true;
+                    break;
+                }
+            }
+
             // Check if the combined text contains any placeholders
             foreach (var placeholder in _data.Placeholders)
             {
@@ -142,6 +153,31 @@ public class WordTemplate
             {
                 // Clear existing runs
                 paragraph.RemoveAllChildren<Run>();
+
+                // Process the text for each special character placeholder
+                foreach (var specialChar in _data.SpecialCharacters)
+                {
+                    string key = $"{{{{{specialChar.Key}}}}}";
+                    if (modifiedText.Contains(key))
+                    {
+                        // Split the text at the placeholder
+                        int placeholderIndex = modifiedText.IndexOf(key);
+                        string beforePlaceholder = modifiedText.Substring(0, placeholderIndex);
+                        string afterPlaceholder = modifiedText.Substring(placeholderIndex + key.Length);
+
+                        // Add text before the placeholder
+                        if (!string.IsNullOrEmpty(beforePlaceholder))
+                        {
+                            paragraph.AppendChild(new Run(new Text(beforePlaceholder)));
+                        }
+
+                        // Add the special character with the specified font
+                        AddSpecialCharacterRun(paragraph, specialChar.Value.Character, specialChar.Value.Font);
+
+                        // Update the modified text to continue processing
+                        modifiedText = afterPlaceholder;
+                    }
+                }
 
                 // Process the text for each placeholder, handling HTML content
                 foreach (var placeholder in _data.Placeholders)
@@ -192,6 +228,18 @@ public class WordTemplate
                         string originalText = text.Text;
                         string textModified = originalText;
                         bool hasHtmlPlaceholder = false;
+                        bool hasSpecialCharPlaceholder = false;
+                        
+                        // First pass: check if there are any special character placeholders
+                        foreach (var specialChar in _data.SpecialCharacters)
+                        {
+                            string key = $"{{{{{specialChar.Key}}}}}";
+                            if (textModified.Contains(key))
+                            {
+                                hasSpecialCharPlaceholder = true;
+                                break;
+                            }
+                        }
                         
                         // First pass: check if there are any HTML placeholders
                         foreach (var placeholder in _data.Placeholders)
@@ -204,7 +252,64 @@ public class WordTemplate
                             }
                         }
                         
-                        if (hasHtmlPlaceholder)
+                        if (hasSpecialCharPlaceholder)
+                        {
+                            // If there's a special character placeholder, we need to handle the entire run differently
+                            var parentRun = text.Parent;
+                            if (parentRun != null)
+                            {
+                                var runProperties = parentRun.Elements<RunProperties>().FirstOrDefault()?.CloneNode(true);
+                                
+                                // Get the text and process each placeholder
+                                string runText = originalText;
+                                foreach (var specialChar in _data.SpecialCharacters)
+                                {
+                                    string key = $"{{{{{specialChar.Key}}}}}";
+                                    if (runText.Contains(key))
+                                    {
+                                        // Split at the placeholder
+                                        int placeholderIndex = runText.IndexOf(key);
+                                        string beforePlaceholder = runText.Substring(0, placeholderIndex);
+                                        string afterPlaceholder = runText.Substring(placeholderIndex + key.Length);
+                                        
+                                        // Add text before placeholder
+                                        if (!string.IsNullOrEmpty(beforePlaceholder))
+                                        {
+                                            var newRun = new Run();
+                                            if (runProperties != null)
+                                                newRun.AppendChild(runProperties.CloneNode(true));
+                                            newRun.AppendChild(new Text(beforePlaceholder));
+                                            parentRun.InsertBeforeSelf(newRun);
+                                        }
+                                        
+                                        // Add special character with specified font
+                                        var specialCharRun = new Run();
+                                        var specialCharProps = new RunProperties();
+                                        specialCharProps.AppendChild(new RunFonts() { Ascii = specialChar.Value.Font, HighAnsi = specialChar.Value.Font });
+                                        specialCharRun.AppendChild(specialCharProps);
+                                        specialCharRun.AppendChild(new Text(specialChar.Value.Character));
+                                        parentRun.InsertBeforeSelf(specialCharRun);
+                                        
+                                        // Update text for next iteration
+                                        runText = afterPlaceholder;
+                                    }
+                                }
+                                
+                                // Add any remaining text
+                                if (!string.IsNullOrEmpty(runText))
+                                {
+                                    var newRun = new Run();
+                                    if (runProperties != null)
+                                        newRun.AppendChild(runProperties.CloneNode(true));
+                                    newRun.AppendChild(new Text(runText));
+                                    parentRun.InsertBeforeSelf(newRun);
+                                }
+                                
+                                // Remove the original run
+                                parentRun.Remove();
+                            }
+                        }
+                        else if (hasHtmlPlaceholder)
                         {
                             // If there's HTML content, we need to handle the entire run differently
                             var parentRun = text.Parent;
@@ -259,18 +364,91 @@ public class WordTemplate
                         else
                         {
                             // Regular text replacement
-                            foreach (var placeholder in _data.Placeholders)
+                            foreach (var specialChar in _data.SpecialCharacters)
                             {
-                                string key = $"{{{{{placeholder.Key}}}}}";
+                                string key = $"{{{{{specialChar.Key}}}}}";
                                 if (textModified.Contains(key))
                                 {
-                                    textModified = textModified.Replace(key, placeholder.Value ?? string.Empty);
+                                    // For special characters, we need to handle them separately
+                                    // We'll mark the text for replacement but not actually replace it here
+                                    hasSpecialCharPlaceholder = true;
+                                    break;
                                 }
                             }
-
-                            if (originalText != textModified)
+                            
+                            if (hasSpecialCharPlaceholder)
                             {
-                                text.Text = textModified;
+                                // If we have special characters, we need to handle them separately
+                                var parentRun = text.Parent;
+                                if (parentRun != null)
+                                {
+                                    var runProperties = parentRun.Elements<RunProperties>().FirstOrDefault()?.CloneNode(true);
+                                    
+                                    // Get the text and process each placeholder
+                                    string runText = originalText;
+                                    foreach (var specialChar in _data.SpecialCharacters)
+                                    {
+                                        string key = $"{{{{{specialChar.Key}}}}}";
+                                        if (runText.Contains(key))
+                                        {
+                                            // Split at the placeholder
+                                            int placeholderIndex = runText.IndexOf(key);
+                                            string beforePlaceholder = runText.Substring(0, placeholderIndex);
+                                            string afterPlaceholder = runText.Substring(placeholderIndex + key.Length);
+                                            
+                                            // Add text before placeholder
+                                            if (!string.IsNullOrEmpty(beforePlaceholder))
+                                            {
+                                                var newRun = new Run();
+                                                if (runProperties != null)
+                                                    newRun.AppendChild(runProperties.CloneNode(true));
+                                                newRun.AppendChild(new Text(beforePlaceholder));
+                                                parentRun.InsertBeforeSelf(newRun);
+                                            }
+                                            
+                                            // Add special character with specified font
+                                            var specialCharRun = new Run();
+                                            var specialCharProps = new RunProperties();
+                                            specialCharProps.AppendChild(new RunFonts() { Ascii = specialChar.Value.Font, HighAnsi = specialChar.Value.Font });
+                                            specialCharRun.AppendChild(specialCharProps);
+                                            specialCharRun.AppendChild(new Text(specialChar.Value.Character));
+                                            parentRun.InsertBeforeSelf(specialCharRun);
+                                            
+                                            // Update text for next iteration
+                                            runText = afterPlaceholder;
+                                        }
+                                    }
+                                    
+                                    // Add any remaining text
+                                    if (!string.IsNullOrEmpty(runText))
+                                    {
+                                        var newRun = new Run();
+                                        if (runProperties != null)
+                                            newRun.AppendChild(runProperties.CloneNode(true));
+                                        newRun.AppendChild(new Text(runText));
+                                        parentRun.InsertBeforeSelf(newRun);
+                                    }
+                                    
+                                    // Remove the original run
+                                    parentRun.Remove();
+                                }
+                            }
+                            else
+                            {
+                                // Regular text replacement
+                                foreach (var placeholder in _data.Placeholders)
+                                {
+                                    string key = $"{{{{{placeholder.Key}}}}}";
+                                    if (textModified.Contains(key))
+                                    {
+                                        textModified = textModified.Replace(key, placeholder.Value ?? string.Empty);
+                                    }
+                                }
+
+                                if (originalText != textModified)
+                                {
+                                    text.Text = textModified;
+                                }
                             }
                         }
                     }
@@ -1794,5 +1972,16 @@ public class WordTemplate
             return ImagePartType.Tiff;
         else
             return ImagePartType.Jpeg; // Default to JPEG
+    }
+    
+    // Method to add a special character run with a specific font
+    private void AddSpecialCharacterRun(OpenXmlElement parent, string character, string fontName)
+    {
+        var run = new Run();
+        var runProps = new RunProperties();
+        runProps.AppendChild(new RunFonts() { Ascii = fontName, HighAnsi = fontName });
+        run.AppendChild(runProps);
+        run.AppendChild(new Text(character));
+        parent.AppendChild(run);
     }
 }
