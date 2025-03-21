@@ -8,6 +8,7 @@ ForgeDoc is a library for processing Word templates with placeholders and genera
 - Add images to Word documents using `{% imageKey %}` syntax
 - Render tables in Word documents
 - Support for rich text formatting
+- Support for special characters with specific fonts (e.g., Wingdings)
 - Works with headers, footers, and tables
 
 ## Image Placeholders
@@ -167,6 +168,73 @@ In this case, the processor will:
 4. Remove any remaining table tags
 
 This is particularly useful for complex tables with headers in different languages or when working with existing template documents.
+
+## Special Characters with Specific Fonts
+
+ForgeDoc supports special characters with specific fonts in Word templates. This feature is particularly useful for inserting symbols like checkmarks, bullets, and other special characters that require specific fonts like Wingdings, Wingdings 2, Symbol, etc.
+
+### Usage
+
+#### In the Template
+
+In your Word template, use the standard placeholder syntax with double curly braces:
+
+```
+{{CheckMark}}
+```
+
+#### In Your Code
+
+When setting up your template data, use the `AddSpecialCharacter` method to specify the character and its font:
+
+```csharp
+var data = new WordTemplateData();
+
+// Add a special character with a specific font
+// \uf052 is a checkmark in Wingdings 2 font
+data.AddSpecialCharacter("CheckMark", "\uf052", "Wingdings 2");
+```
+
+### Common Special Characters in Wingdings 2
+
+Here are some common special characters in the Wingdings 2 font:
+
+| Character | Unicode | Description |
+|-----------|---------|-------------|
+| \uf052    | U+F052  | Checkmark   |
+| \uf06E    | U+F06E  | Circle      |
+| \uf06F    | U+F06F  | Square      |
+| \uf070    | U+F070  | Diamond     |
+| \uf071    | U+F071  | Triangle    |
+| \uf0FC    | U+F0FC  | Arrow Right |
+| \uf0FB    | U+F0FB  | Arrow Left  |
+| \uf0FC    | U+F0FC  | Arrow Up    |
+| \uf0FD    | U+F0FD  | Arrow Down  |
+
+### Example
+
+```csharp
+// Create template data
+var data = new WordTemplateData();
+
+// Add regular placeholders
+data.AddPlaceholder("Title", "Special Character Example");
+
+// Add special characters with specific fonts
+data.AddSpecialCharacter("CheckMark", "\uf052", "Wingdings 2");
+data.AddSpecialCharacter("Square", "\uf06F", "Wingdings 2");
+data.AddSpecialCharacter("Circle", "\uf06E", "Wingdings 2");
+
+// Create and process the template
+var template = new WordTemplate("template.docx", data);
+byte[] result = template.GetFile();
+```
+
+### Notes
+
+- The character must be provided as a Unicode escape sequence (e.g., `\uf052`) or as the actual character.
+- The font name must exactly match the font name in Word (e.g., "Wingdings 2", "Symbol", etc.).
+- This feature works in all parts of the document, including headers, footers, and tables.
 
 ## Usage
 
