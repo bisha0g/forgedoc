@@ -101,7 +101,10 @@ public class WordTemplate
     {
         if (part?.RootElement == null) return;
 
-        // First, handle paragraphs that might contain split placeholders
+        // Determine if this is a header part to use the appropriate placeholder dictionary
+        bool isHeaderPart = part is HeaderPart;
+        
+        // Process all paragraphs in the part
         foreach (var paragraph in part.RootElement.Descendants<Paragraph>())
         {
             // Get all runs and their text content
@@ -126,7 +129,7 @@ public class WordTemplate
                 }
             }
 
-            // Check if the combined text contains any placeholders
+            // Check if the combined text contains any regular placeholders
             foreach (var placeholder in _data.Placeholders)
             {
                 string key = $"{{{{{placeholder.Key}}}}}";
@@ -144,6 +147,31 @@ public class WordTemplate
                         // Regular text replacement
                         modifiedText = modifiedText.Replace(key, placeholder.Value ?? string.Empty);
                         containsPlaceholder = true;
+                    }
+                }
+            }
+            
+            // Check if the combined text contains any header placeholders (only if in a header part)
+            if (isHeaderPart)
+            {
+                foreach (var placeholder in _data.HeaderPlaceholders)
+                {
+                    string key = $"{{{{{placeholder.Key}}}}}";
+                    if (modifiedText.Contains(key))
+                    {
+                        // Check if the placeholder value contains HTML
+                        if (placeholder.Value != null && IsHtml(placeholder.Value))
+                        {
+                            // Mark that we found a placeholder, but don't replace it yet
+                            // We'll handle HTML separately
+                            containsPlaceholder = true;
+                        }
+                        else
+                        {
+                            // Regular text replacement
+                            modifiedText = modifiedText.Replace(key, placeholder.Value ?? string.Empty);
+                            containsPlaceholder = true;
+                        }
                     }
                 }
             }
@@ -179,7 +207,7 @@ public class WordTemplate
                     }
                 }
 
-                // Process the text for each placeholder, handling HTML content
+                // Process the text for each regular placeholder, handling HTML content
                 foreach (var placeholder in _data.Placeholders)
                 {
                     string key = $"{{{{{placeholder.Key}}}}}";
@@ -199,7 +227,7 @@ public class WordTemplate
                             }
 
                             // Add the HTML content
-                            AppendHtmlToRun(paragraph, placeholder.Value, null);
+                            AppendHtmlToRun(paragraph, placeholder.Value, runs.FirstOrDefault()?.Elements<RunProperties>().FirstOrDefault() as RunProperties);
 
                             // Update the modified text to continue processing
                             modifiedText = afterPlaceholder;
@@ -207,6 +235,41 @@ public class WordTemplate
                         else
                         {
                             // Regular replacement already handled above
+                        }
+                    }
+                }
+                
+                // Process the text for each header placeholder, handling HTML content (only if in a header part)
+                if (isHeaderPart)
+                {
+                    foreach (var placeholder in _data.HeaderPlaceholders)
+                    {
+                        string key = $"{{{{{placeholder.Key}}}}}";
+                        if (modifiedText.Contains(key))
+                        {
+                            if (placeholder.Value != null && IsHtml(placeholder.Value))
+                            {
+                                // Split the text at the placeholder
+                                int placeholderIndex = modifiedText.IndexOf(key);
+                                string beforePlaceholder = modifiedText.Substring(0, placeholderIndex);
+                                string afterPlaceholder = modifiedText.Substring(placeholderIndex + key.Length);
+
+                                // Add text before the placeholder
+                                if (!string.IsNullOrEmpty(beforePlaceholder))
+                                {
+                                    paragraph.AppendChild(new Run(new Text(beforePlaceholder)));
+                                }
+
+                                // Add the HTML content
+                                AppendHtmlToRun(paragraph, placeholder.Value, runs.FirstOrDefault()?.Elements<RunProperties>().FirstOrDefault() as RunProperties);
+
+                                // Update the modified text to continue processing
+                                modifiedText = afterPlaceholder;
+                            }
+                            else
+                            {
+                                // Regular replacement already handled above
+                            }
                         }
                     }
                 }
@@ -249,6 +312,20 @@ public class WordTemplate
                             {
                                 hasHtmlPlaceholder = true;
                                 break;
+                            }
+                        }
+                        
+                        // First pass: check if there are any header HTML placeholders (only if in a header part)
+                        if (isHeaderPart)
+                        {
+                            foreach (var placeholder in _data.HeaderPlaceholders)
+                            {
+                                string key = $"{{{{{placeholder.Key}}}}}";
+                                if (textModified.Contains(key) && placeholder.Value != null && IsHtml(placeholder.Value))
+                                {
+                                    hasHtmlPlaceholder = true;
+                                    break;
+                                }
                             }
                         }
                         
@@ -311,7 +388,7 @@ public class WordTemplate
                         }
                         else if (hasHtmlPlaceholder)
                         {
-                            // If there's HTML content, we need to handle the entire run differently
+                            // If there's an HTML placeholder, we need to handle the entire run differently
                             var parentRun = text.Parent;
                             if (parentRun != null)
                             {
@@ -319,10 +396,12 @@ public class WordTemplate
                                 
                                 // Get the text and process each placeholder
                                 string runText = originalText;
+                                
+                                // Process regular placeholders
                                 foreach (var placeholder in _data.Placeholders)
                                 {
                                     string key = $"{{{{{placeholder.Key}}}}}";
-                                    if (runText.Contains(key))
+                                    if (runText.Contains(key) && placeholder.Value != null && IsHtml(placeholder.Value))
                                     {
                                         // Split at the placeholder
                                         int placeholderIndex = runText.IndexOf(key);
@@ -340,10 +419,42 @@ public class WordTemplate
                                         }
                                         
                                         // Add HTML content
-                                        AppendHtmlToRun(parentRun.Parent, placeholder.Value, null);
-                                        
-                                        // Update text for next iteration
+                                        AppendHtmlToRun(parentRun.Parent, placeholder.Value, runProperties as RunProperties);
+
+                                        // Update the modified text to continue processing
                                         runText = afterPlaceholder;
+                                    }
+                                }
+                                
+                                // Process header placeholders (only if in a header part)
+                                if (isHeaderPart)
+                                {
+                                    foreach (var placeholder in _data.HeaderPlaceholders)
+                                    {
+                                        string key = $"{{{{{placeholder.Key}}}}}";
+                                        if (runText.Contains(key) && placeholder.Value != null && IsHtml(placeholder.Value))
+                                        {
+                                            // Split at the placeholder
+                                            int placeholderIndex = runText.IndexOf(key);
+                                            string beforePlaceholder = runText.Substring(0, placeholderIndex);
+                                            string afterPlaceholder = runText.Substring(placeholderIndex + key.Length);
+                                            
+                                            // Add text before placeholder
+                                            if (!string.IsNullOrEmpty(beforePlaceholder))
+                                            {
+                                                var newRun = new Run();
+                                                if (runProperties != null)
+                                                    newRun.AppendChild(runProperties.CloneNode(true));
+                                                newRun.AppendChild(new Text(beforePlaceholder));
+                                                parentRun.InsertBeforeSelf(newRun);
+                                            }
+                                            
+                                            // Add HTML content
+                                            AppendHtmlToRun(parentRun.Parent, placeholder.Value, runProperties as RunProperties);
+
+                                            // Update the modified text to continue processing
+                                            runText = afterPlaceholder;
+                                        }
                                     }
                                 }
                                 
@@ -444,8 +555,22 @@ public class WordTemplate
                                         textModified = textModified.Replace(key, placeholder.Value ?? string.Empty);
                                     }
                                 }
-
-                                if (originalText != textModified)
+                                
+                                // Also check header placeholders if in a header part
+                                if (isHeaderPart)
+                                {
+                                    foreach (var placeholder in _data.HeaderPlaceholders)
+                                    {
+                                        string key = $"{{{{{placeholder.Key}}}}}";
+                                        if (textModified.Contains(key))
+                                        {
+                                            textModified = textModified.Replace(key, placeholder.Value ?? string.Empty);
+                                        }
+                                    }
+                                }
+                                
+                                // Update the text if it was modified
+                                if (textModified != originalText)
                                 {
                                     text.Text = textModified;
                                 }
@@ -1777,96 +1902,6 @@ public class WordTemplate
         );
     }
     
-    private void ProcessStandardTablePlaceholders(OpenXmlPart part)
-    {
-        // Get all paragraphs in the document
-        var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
-        
-        foreach (var tableData in _data.Tables)
-        {
-            string tableName = tableData.Key;
-            List<Dictionary<string, string>> data = tableData.Value;
-            
-            // Skip if no data
-            if (data == null || !data.Any()) continue;
-            
-            string startTag = $"{{{{#docTable {tableName}}}}}";
-            string endTag = "{{/docTable}}";
-            
-            int startIndex = -1;
-            int endIndex = -1;
-            
-            // Find the start and end tags in the paragraphs
-            for (int i = 0; i < paragraphs.Count; i++)
-            {
-                var paragraph = paragraphs[i];
-                string paragraphText = GetParagraphText(paragraph);
-                
-                if (paragraphText.Contains(startTag))
-                {
-                    startIndex = i;
-                }
-                
-                if (paragraphText.Contains(endTag) && startIndex != -1 && i >= startIndex)
-                {
-                    endIndex = i;
-                    break;
-                }
-            }
-            
-            // If we found both start and end tags
-            if (startIndex != -1 && endIndex != -1)
-            {
-                // Extract the template content between the tags
-                var templateContent = new StringBuilder();
-                for (int i = startIndex; i <= endIndex; i++)
-                {
-                    templateContent.AppendLine(GetParagraphText(paragraphs[i]));
-                }
-                
-                // Create the table
-                Table table = CreateTable(templateContent.ToString(), tableData.Value);
-                
-                // Insert the table after the start paragraph
-                if (table != null)
-                {
-                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
-                }
-                
-                // Remove the paragraphs that contained the table template
-                for (int i = endIndex; i >= startIndex; i--)
-                {
-                    paragraphs[i].Remove();
-                }
-            }
-            // If we only found the start tag but not the end tag
-            else if (startIndex != -1)
-            {
-                // Check if the start and end tags are in the same paragraph
-                string paragraphText = GetParagraphText(paragraphs[startIndex]);
-                int startTagIndex = paragraphText.IndexOf(startTag);
-                int endTagIndex = paragraphText.IndexOf(endTag);
-                
-                if (startTagIndex != -1 && endTagIndex != -1 && endTagIndex > startTagIndex)
-                {
-                    // Extract the template content between the tags
-                    string templateContent = paragraphText.Substring(
-                        startTagIndex + startTag.Length,
-                        endTagIndex - startTagIndex - startTag.Length);
-                    
-                    // Create the table
-                    Table table = CreateTable(templateContent, tableData.Value);
-                    
-                    // Insert the table after the paragraph
-                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
-                    
-                    // Remove the original paragraph
-                    paragraphs[startIndex].Remove();
-                }
-            }
-        }
-    }
-    
     private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
     {
         // Create a unique ID for the image
@@ -1983,5 +2018,95 @@ public class WordTemplate
         run.AppendChild(runProps);
         run.AppendChild(new Text(character));
         parent.AppendChild(run);
+    }
+    
+    private void ProcessStandardTablePlaceholders(OpenXmlPart part)
+    {
+        // Get all paragraphs in the document
+        var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
+        
+        foreach (var tableData in _data.Tables)
+        {
+            string tableName = tableData.Key;
+            List<Dictionary<string, string>> data = tableData.Value;
+            
+            // Skip if no data
+            if (data == null || !data.Any()) continue;
+            
+            string startTag = $"{{{{#docTable {tableName}}}}}";
+            string endTag = "{{/docTable}}";
+            
+            int startIndex = -1;
+            int endIndex = -1;
+            
+            // Find the start and end tags in the paragraphs
+            for (int i = 0; i < paragraphs.Count; i++)
+            {
+                var paragraph = paragraphs[i];
+                string paragraphText = GetParagraphText(paragraph);
+                
+                if (paragraphText.Contains(startTag))
+                {
+                    startIndex = i;
+                }
+                
+                if (paragraphText.Contains(endTag) && startIndex != -1 && i >= startIndex)
+                {
+                    endIndex = i;
+                    break;
+                }
+            }
+            
+            // If we found both start and end tags
+            if (startIndex != -1 && endIndex != -1)
+            {
+                // Extract the template content between the tags
+                var templateContent = new StringBuilder();
+                for (int i = startIndex; i <= endIndex; i++)
+                {
+                    templateContent.AppendLine(GetParagraphText(paragraphs[i]));
+                }
+                
+                // Create the table
+                Table table = CreateTable(templateContent.ToString(), tableData.Value);
+                
+                // Insert the table after the start paragraph
+                if (table != null)
+                {
+                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
+                }
+                
+                // Remove the paragraphs that contained the table template
+                for (int i = endIndex; i >= startIndex; i--)
+                {
+                    paragraphs[i].Remove();
+                }
+            }
+            // If we only found the start tag but not the end tag
+            else if (startIndex != -1)
+            {
+                // Check if the start and end tags are in the same paragraph
+                string paragraphText = GetParagraphText(paragraphs[startIndex]);
+                int startTagIndex = paragraphText.IndexOf(startTag);
+                int endTagIndex = paragraphText.IndexOf(endTag);
+                
+                if (startTagIndex != -1 && endTagIndex != -1 && endTagIndex > startTagIndex)
+                {
+                    // Extract the template content between the tags
+                    string templateContent = paragraphText.Substring(
+                        startTagIndex + startTag.Length,
+                        endTagIndex - startTagIndex - startTag.Length);
+                    
+                    // Create the table
+                    Table table = CreateTable(templateContent, tableData.Value);
+                    
+                    // Insert the table after the paragraph
+                    paragraphs[startIndex].Parent.InsertAfter(table, paragraphs[startIndex]);
+                    
+                    // Remove the original paragraph
+                    paragraphs[startIndex].Remove();
+                }
+            }
+        }
     }
 }

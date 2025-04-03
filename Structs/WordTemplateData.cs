@@ -6,6 +6,8 @@ public struct WordTemplateData
     {
         // Dictionary for simple key-value placeholders
         public Dictionary<string, string> Placeholders { get; set; }
+        // Dictionary for header placeholders
+        public Dictionary<string, string> HeaderPlaceholders { get; set; }
         public Dictionary<string, string> Images { get; set; }
         // Dictionary for table data, where the key is the table name and the value is a list of dictionaries
         // Each dictionary in the list represents a row, with keys as column names and values as cell contents
@@ -21,6 +23,7 @@ public struct WordTemplateData
             Tables = tables ?? new Dictionary<string, List<Dictionary<string, string>>>();
             Images = images ?? new Dictionary<string, string>();
             SpecialCharacters = new Dictionary<string, (string Character, string Font)>();
+            HeaderPlaceholders = new Dictionary<string, string>();
         }
         
         // Default constructor
@@ -30,6 +33,7 @@ public struct WordTemplateData
             Tables = new Dictionary<string, List<Dictionary<string, string>>>();
             Images = new Dictionary<string, string>();
             SpecialCharacters = new Dictionary<string, (string Character, string Font)>();
+            HeaderPlaceholders = new Dictionary<string, string>();
         }
         
         // Method to add a placeholder
@@ -42,6 +46,18 @@ public struct WordTemplateData
         public bool HasPlaceholder(string key)
         {
             return Placeholders.ContainsKey(key);
+        }
+        
+        // Method to add a header placeholder
+        public void AddHeaderPlaceholder(string key, string value)
+        {
+            HeaderPlaceholders[key] = value;
+        }
+        
+        // Method to check if a header placeholder exists
+        public bool HasHeaderPlaceholder(string key)
+        {
+            return HeaderPlaceholders.ContainsKey(key);
         }
         
         // Method to add an image
