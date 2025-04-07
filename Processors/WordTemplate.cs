@@ -60,18 +60,25 @@ public class WordTemplate
                     // Replace placeholders in headers
                     if (doc.MainDocumentPart.HeaderParts != null)
                     {
-                        foreach (var headerPart in doc.MainDocumentPart.HeaderParts)
+                        // Create a copy of the HeaderParts collection to avoid collection modification issues
+                        var headerParts = doc.MainDocumentPart.HeaderParts.ToList();
+                        
+                        foreach (var headerPart in headerParts)
                         {
                             ReplacePlaceholdersInPart(headerPart);
                             ProcessTablePlaceholders(headerPart);
                             ProcessImagePlaceholders(headerPart);
+                            ProcessHeaderImagePlaceholders(headerPart);
                         }
                     }
 
                     // Replace placeholders in footers
                     if (doc.MainDocumentPart.FooterParts != null)
                     {
-                        foreach (var footerPart in doc.MainDocumentPart.FooterParts)
+                        // Create a copy of the FooterParts collection to avoid collection modification issues
+                        var footerParts = doc.MainDocumentPart.FooterParts.ToList();
+                        
+                        foreach (var footerPart in footerParts)
                         {
                             ReplacePlaceholdersInPart(footerPart);
                             ProcessTablePlaceholders(footerPart);
@@ -138,7 +145,7 @@ public class WordTemplate
                     // Check if the placeholder value contains HTML
                     if (placeholder.Value != null && IsHtml(placeholder.Value))
                     {
-                        // Mark that we found a placeholder, but don't replace it yet
+                        // Mark that we found a placeholder, but don't replace it, yet
                         // We'll handle HTML separately
                         containsPlaceholder = true;
                     }
@@ -162,7 +169,7 @@ public class WordTemplate
                         // Check if the placeholder value contains HTML
                         if (placeholder.Value != null && IsHtml(placeholder.Value))
                         {
-                            // Mark that we found a placeholder, but don't replace it yet
+                            // Mark that we found a placeholder, but don't replace it, yet
                             // We'll handle HTML separately
                             containsPlaceholder = true;
                         }
@@ -1041,123 +1048,119 @@ public class WordTemplate
         {
             Console.WriteLine($"Starting image insertion for placeholder: {placeholderText}, image path: {imagePath}");
             
-            // Get the MainDocumentPart
-            MainDocumentPart mainPart = part as MainDocumentPart;
-            if (mainPart == null && part is HeaderPart headerPart)
-            {
-                mainPart = headerPart.GetParentParts().OfType<MainDocumentPart>().FirstOrDefault();
-                Console.WriteLine("Getting MainDocumentPart from HeaderPart");
-            }
-            else if (mainPart == null && part is FooterPart footerPart)
-            {
-                mainPart = footerPart.GetParentParts().OfType<MainDocumentPart>().FirstOrDefault();
-                Console.WriteLine("Getting MainDocumentPart from FooterPart");
-            }
+            // Extract width and height if specified in the placeholder
+            int width = 0;
+            int height = 0;
             
-            if (mainPart == null)
-            {
-                mainPart = part.GetParentParts().OfType<MainDocumentPart>().FirstOrDefault();
-                Console.WriteLine("Getting MainDocumentPart from parent parts");
-            }
+            // Default max dimensions if not specified
+            int maxWidth = 400;
+            int maxHeight = 300;
             
-            if (mainPart == null)
+            // Check if the placeholder contains dimensions in the format key:widthxheight
+            var match = Regex.Match(placeholderText, @"\{%\s*([^:}]+)(?:\s*:\s*(\d+)x(\d+))?\s*%\}");
+            if (match.Success && match.Groups.Count >= 4)
             {
-                Console.WriteLine("ERROR: Could not find MainDocumentPart");
-                return;
-            }
-            
-            // Get image dimensions
-            int imageWidthEmu;
-            int imageHeightEmu;
-            ImagePartType imageType;
-            
-            using (var img = System.Drawing.Image.FromFile(imagePath))
-            {
-                // Check if we need to resize the image
-                double maxWidthInPixels = 400; // Default max width in pixels
-                double maxHeightInPixels = 300; // Default max height in pixels
-                
-                Console.WriteLine($"Checking for size in placeholder: {placeholderText}");
-                
-                // Try different regex patterns to match the size
-                var sizeMatch = Regex.Match(placeholderText, @"\{%\s*([^:}]+):(\d+)x(\d+)\s*%\}");
-                if (!sizeMatch.Success)
+                if (!string.IsNullOrEmpty(match.Groups[2].Value))
                 {
-                    // Try alternate format with spaces
-                    sizeMatch = Regex.Match(placeholderText, @"\{%\s*([^:}]+)\s*:\s*(\d+)\s*x\s*(\d+)\s*%\}");
+                    int.TryParse(match.Groups[2].Value, out maxWidth);
                 }
                 
-                if (sizeMatch.Success && sizeMatch.Groups.Count > 2)
+                if (!string.IsNullOrEmpty(match.Groups[3].Value))
                 {
-                    Console.WriteLine($"Size match groups: {sizeMatch.Groups.Count}, Group 1: '{sizeMatch.Groups[1].Value}', Group 2: '{sizeMatch.Groups[2].Value}', Group 3: '{sizeMatch.Groups[3].Value}'");
-                    
-                    // Extract width and height from the placeholder
-                    if (int.TryParse(sizeMatch.Groups[2].Value, out int width))
+                    int.TryParse(match.Groups[3].Value, out maxHeight);
+                }
+                
+                Console.WriteLine($"Extracted dimensions from placeholder: {maxWidth}x{maxHeight}");
+            }
+            
+            // Load the image and get its dimensions
+            using (var image = System.Drawing.Image.FromFile(imagePath))
+            {
+                // Calculate scaled dimensions while maintaining aspect ratio
+                double aspectRatio = (double)image.Width / image.Height;
+                
+                if (image.Width > maxWidth || image.Height > maxHeight)
+                {
+                    if (image.Width / (double)maxWidth > image.Height / (double)maxHeight)
                     {
-                        maxWidthInPixels = width;
-                        Console.WriteLine($"Parsed width: {maxWidthInPixels}");
+                        width = maxWidth;
+                        height = (int)(width / aspectRatio);
                     }
-                    
-                    if (int.TryParse(sizeMatch.Groups[3].Value, out int height))
+                    else
                     {
-                        maxHeightInPixels = height;
-                        Console.WriteLine($"Parsed height: {maxHeightInPixels}");
+                        height = maxHeight;
+                        width = (int)(height * aspectRatio);
                     }
-                    
-                    Console.WriteLine($"Found size in placeholder: {maxWidthInPixels}x{maxHeightInPixels}");
                 }
                 else
                 {
-                    Console.WriteLine($"No size information found in placeholder or could not parse: {placeholderText}");
+                    width = image.Width;
+                    height = image.Height;
                 }
                 
-                // Calculate new dimensions while maintaining aspect ratio
-                double scale = 1.0;
-                if (img.Width > maxWidthInPixels || img.Height > maxHeightInPixels)
-                {
-                    double widthScale = maxWidthInPixels / img.Width;
-                    double heightScale = maxHeightInPixels / img.Height;
-                    scale = Math.Min(widthScale, heightScale);
-                    
-                    Console.WriteLine($"Resizing image with scale factor: {scale}");
-                }
-                
-                int newWidth = (int)(img.Width * scale);
-                int newHeight = (int)(img.Height * scale);
+                Console.WriteLine($"Original image dimensions: {image.Width}x{image.Height}, scaled to: {width}x{height}");
                 
                 // Convert pixels to EMUs (English Metric Units)
-                // 1 inch = 914400 EMUs, 1 inch = 96 pixels (default)
-                double emuPerPixel = 9525;
-                imageWidthEmu = (int)(newWidth * emuPerPixel);
-                imageHeightEmu = (int)(newHeight * emuPerPixel);
-                Console.WriteLine($"Original dimensions: {img.Width}x{img.Height} pixels");
-                Console.WriteLine($"New dimensions: {newWidth}x{newHeight} pixels, {imageWidthEmu}x{imageHeightEmu} EMUs");
+                long emuWidth = width * 9525;
+                long emuHeight = height * 9525;
                 
-                // Determine image type based on format
-                imageType = GetImagePartTypeFromFormat(img.RawFormat);
-                Console.WriteLine($"Detected image format: {imageType}");
+                // Determine the image type
+                ImagePartType imageType = ImagePartType.Jpeg;
+                if (Path.GetExtension(imagePath).ToLower() == ".png")
+                {
+                    imageType = ImagePartType.Png;
+                }
+                else if (Path.GetExtension(imagePath).ToLower() == ".gif")
+                {
+                    imageType = ImagePartType.Gif;
+                }
+                
+                // Add the image to the appropriate part and get the relationship ID
+                string relationshipId;
+                
+                using (FileStream stream = new FileStream(imagePath, FileMode.Open))
+                {
+                    // Handle different part types
+                    if (part is HeaderPart headerPart)
+                    {
+                        ImagePart imagePart = headerPart.AddImagePart(imageType);
+                        imagePart.FeedData(stream);
+                        relationshipId = headerPart.GetIdOfPart(imagePart);
+                        Console.WriteLine($"Added image to HeaderPart, relationship ID: {relationshipId}");
+                    }
+                    else if (part is FooterPart footerPart)
+                    {
+                        ImagePart imagePart = footerPart.AddImagePart(imageType);
+                        imagePart.FeedData(stream);
+                        relationshipId = footerPart.GetIdOfPart(imagePart);
+                        Console.WriteLine($"Added image to FooterPart, relationship ID: {relationshipId}");
+                    }
+                    else if (part is MainDocumentPart mainPart)
+                    {
+                        ImagePart imagePart = mainPart.AddImagePart(imageType);
+                        imagePart.FeedData(stream);
+                        relationshipId = mainPart.GetIdOfPart(imagePart);
+                        Console.WriteLine($"Added image to MainDocumentPart, relationship ID: {relationshipId}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Unsupported part type: {part.GetType().Name}");
+                        return;
+                    }
+                }
+                
+                // Create the drawing element
+                Drawing drawing = AddImageToAnyWhere(relationshipId, emuWidth, emuHeight);
+                
+                // Replace the placeholder text with the image
+                ReplaceTextWithImage(paragraph, placeholderText, drawing);
+                
+                Console.WriteLine("Image inserted successfully");
             }
-            
-            // Add the image to the document
-            ImagePart imagePart = mainPart.AddImagePart(imageType);
-            using (FileStream stream = new FileStream(imagePath, FileMode.Open))
-            {
-                imagePart.FeedData(stream);
-                Console.WriteLine("Image data fed to ImagePart");
-            }
-            
-            // Create the drawing element
-            Drawing drawing = AddImageToAnyWhere(mainPart.Document, mainPart.GetIdOfPart(imagePart), imageWidthEmu, imageHeightEmu, imageType);
-            Console.WriteLine("Drawing element created");
-            
-            // Replace the placeholder text with the image
-            ReplaceTextWithImage(paragraph, placeholderText, drawing);
-            Console.WriteLine("Placeholder text replaced with image");
         }
         catch (Exception ex)
         {
-            // Log the error or handle it as appropriate
-            Console.WriteLine($"ERROR inserting image: {ex.Message}");
+            Console.WriteLine($"Error in InsertImageInParagraph: {ex.Message}");
             Console.WriteLine($"Stack trace: {ex.StackTrace}");
         }
     }
@@ -1201,9 +1204,12 @@ public class WordTemplate
                         int startIndex = paragraphText.LastIndexOf("{%", placeholderIndex);
                         if (startIndex >= 0)
                         {
-                            placeholderIndex = startIndex;
-                            placeholderText = paragraphText.Substring(startIndex, match.Index + match.Length - startIndex);
-                            Console.WriteLine($"Expanded placeholder to: '{placeholderText}'");
+                            int endIndex = paragraphText.IndexOf("%}", startIndex);
+                            if (endIndex > startIndex)
+                            {
+                                placeholderText = paragraphText.Substring(startIndex, endIndex - startIndex + 2);
+                                Console.WriteLine($"Expanded placeholder to: '{placeholderText}'");
+                            }
                         }
                     }
                     break;
@@ -1292,14 +1298,14 @@ public class WordTemplate
             if (part == null)
             {
                 // Try to get the part from the header or footer
-                var header = cell.Ancestors<Header>().FirstOrDefault();
+                var header = paragraph.Ancestors<Header>().FirstOrDefault();
                 if (header != null)
                 {
                     part = header.HeaderPart;
                 }
                 else
                 {
-                    var footer = cell.Ancestors<Footer>().FirstOrDefault();
+                    var footer = paragraph.Ancestors<Footer>().FirstOrDefault();
                     if (footer != null)
                     {
                         part = footer.FooterPart;
@@ -1902,13 +1908,13 @@ public class WordTemplate
         );
     }
     
-    private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
+    private Drawing AddImageToAnyWhere(string relationshipId, long imageSizeWidth, long imageSizeHeight)
     {
         // Create a unique ID for the image
         string imageId = $"image{Guid.NewGuid()}";
         
-        // Determine file extension based on image type
-        string fileExtension = GetFileExtensionFromImageType(imageType);
+        // Generate a unique numeric ID for the image (Word requires unique IDs)
+        UInt32Value uniqueDocPropId = (UInt32Value)(uint)new Random().Next(1, 1000000);
         
         // Create a new Drawing object
         Drawing drawing = new Drawing(
@@ -1923,7 +1929,7 @@ public class WordTemplate
                 },
                 new DW.DocProperties()
                 {
-                    Id = (UInt32Value)1U,
+                    Id = uniqueDocPropId,
                     Name = imageId
                 },
                 new DW.NonVisualGraphicFrameDrawingProperties(
@@ -1934,8 +1940,8 @@ public class WordTemplate
                             new PIC.NonVisualPictureProperties(
                                 new PIC.NonVisualDrawingProperties()
                                 {
-                                    Id = (UInt32Value)0U,
-                                    Name = $"{imageId}{fileExtension}"
+                                    Id = uniqueDocPropId,
+                                    Name = $"{imageId}.jpg"
                                 },
                                 new PIC.NonVisualPictureDrawingProperties()),
                             new PIC.BlipFill(
@@ -1947,7 +1953,7 @@ public class WordTemplate
                                         })
                                 )
                                 {
-                                    Embed = getIdOfPart,
+                                    Embed = relationshipId,
                                     CompressionState = A.BlipCompressionValues.Print
                                 },
                                 new A.Stretch(
@@ -1955,7 +1961,11 @@ public class WordTemplate
                             new PIC.ShapeProperties(
                                 new A.Transform2D(
                                     new A.Offset() { X = 0L, Y = 0L },
-                                    new A.Extents() { Cx = imageSizeWidth, Cy = imageSizeHeight }),
+                                    new A.Extents()
+                                    {
+                                        Cx = imageSizeWidth,
+                                        Cy = imageSizeHeight
+                                    }),
                                 new A.PresetGeometry(
                                     new A.AdjustValueList()
                                 )
@@ -1970,7 +1980,7 @@ public class WordTemplate
                 DistanceFromRight = (UInt32Value)0U,
                 EditId = "50D07946"
             });
-            
+        
         return drawing;
     }
     
@@ -2018,6 +2028,142 @@ public class WordTemplate
         run.AppendChild(runProps);
         run.AppendChild(new Text(character));
         parent.AppendChild(run);
+    }
+    
+    private void ProcessHeaderImagePlaceholders(OpenXmlPart part)
+    {
+        if (part?.RootElement == null || _data.HeaderImages == null || !_data.HeaderImages.Any()) return;
+        
+        Console.WriteLine($"Processing header image placeholders in {part.GetType().Name}");
+        
+        // Get all paragraphs in the header and make a copy to avoid collection modification issues
+        var paragraphs = part.RootElement.Descendants<Paragraph>().ToList();
+        
+        // Process each paragraph in a way that avoids collection modification issues
+        for (int i = 0; i < paragraphs.Count; i++)
+        {
+            var paragraph = paragraphs[i];
+            
+            // Get the text of the paragraph
+            string paragraphText = GetParagraphText(paragraph);
+            
+            // Skip if no text
+            if (string.IsNullOrWhiteSpace(paragraphText)) continue;
+            
+            Console.WriteLine($"Checking header paragraph: '{paragraphText}'");
+            
+            // List to store image placeholders found in this paragraph
+            List<string> imagePlaceholders = new List<string>();
+            
+            // Find {% key %} or {% key:widthxheight %} style placeholders with or without spaces
+            var matches = Regex.Matches(paragraphText, @"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+            var noSpaceMatches = Regex.Matches(paragraphText, @"\{%([^:}]+)(?::(\d+)x(\d+))?%\}");
+            
+            foreach (Match match in matches)
+            {
+                imagePlaceholders.Add(match.Value);
+                Console.WriteLine($"Found header image placeholder: {match.Value}");
+            }
+            
+            foreach (Match match in noSpaceMatches)
+            {
+                if (!imagePlaceholders.Contains(match.Value))
+                {
+                    imagePlaceholders.Add(match.Value);
+                    Console.WriteLine($"Found header image placeholder without spaces: {match.Value}");
+                }
+            }
+            
+            // Also check for any text that might include dimensions but not in the expected format
+            var dimensionMatches = Regex.Matches(paragraphText, @":\d+x\d+");
+            foreach (Match match in dimensionMatches)
+            {
+                // Find the surrounding placeholder-like text
+                int startIndex = paragraphText.LastIndexOf("{%", match.Index);
+                int endIndex = paragraphText.IndexOf("%}", match.Index);
+                
+                if (startIndex >= 0 && endIndex > startIndex)
+                {
+                    string fullPlaceholder = paragraphText.Substring(startIndex, endIndex - startIndex + 2);
+                    if (!imagePlaceholders.Contains(fullPlaceholder))
+                    {
+                        imagePlaceholders.Add(fullPlaceholder);
+                        Console.WriteLine($"Found dimension-containing text: {fullPlaceholder}");
+                    }
+                }
+            }
+            
+            // Process each placeholder
+            foreach (string placeholder in imagePlaceholders)
+            {
+                string key = null;
+                
+                // Extract the key from the placeholder
+                if (placeholder.StartsWith("{%"))
+                {
+                    // Extract key from {% key %} or {% key:widthxheight %} with or without spaces
+                    var match = Regex.Match(placeholder, @"\{%\s*([^:}]+)(?::(\d+)x(\d+))?\s*%\}");
+                    if (!match.Success)
+                    {
+                        // Try format without spaces {%key%} or {%key:100x100%}
+                        match = Regex.Match(placeholder, @"\{%([^:}]+)(?::(\d+)x(\d+))?%\}");
+                    }
+                    
+                    if (!match.Success)
+                    {
+                        // Try alternate format with spaces
+                        match = Regex.Match(placeholder, @"\{%\s*([^:}]+)\s*:\s*(\d+)\s*x\s*(\d+)\s*%\}");
+                    }
+                    
+                    if (match.Success)
+                    {
+                        key = match.Groups[1].Value.Trim();
+                        Console.WriteLine($"Extracted key from header placeholder: '{key}'");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Failed to extract key from header placeholder: {placeholder}");
+                        continue;
+                    }
+                }
+                
+                // Skip if no key found
+                if (string.IsNullOrEmpty(key))
+                {
+                    Console.WriteLine("No key found in header placeholder");
+                    continue;
+                }
+                
+                // Get the image path
+                if (_data.HasHeaderImage(key))
+                {
+                    string imagePath = _data.GetHeaderImage(key);
+                    Console.WriteLine($"Found header image for key '{key}': {imagePath}");
+                    
+                    if (!string.IsNullOrEmpty(imagePath) && System.IO.File.Exists(imagePath))
+                    {
+                        try
+                        {
+                            // Insert the image into the paragraph
+                            InsertImageInParagraph(part, paragraph, imagePath, placeholder);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error inserting header image: {ex.Message}");
+                            Console.WriteLine(ex.StackTrace);
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine($"Header image file not found or path is empty: {imagePath}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"No header image found for key: {key}");
+                }
+            }
+        }
     }
     
     private void ProcessStandardTablePlaceholders(OpenXmlPart part)
