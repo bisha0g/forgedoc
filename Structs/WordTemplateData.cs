@@ -7,6 +7,8 @@ public struct WordTemplateData
         // Dictionary for simple key-value placeholders
         public Dictionary<string, string> Placeholders { get; set; }
         public Dictionary<string, string> Images { get; set; }
+        // Dictionary for header images
+        public Dictionary<string, string> HeaderImages { get; set; }
         // Dictionary for table data, where the key is the table name and the value is a list of dictionaries
         // Each dictionary in the list represents a row, with keys as column names and values as cell contents
         public Dictionary<string, List<Dictionary<string, string>>> Tables { get; set; }
@@ -20,6 +22,7 @@ public struct WordTemplateData
             Placeholders = placeholders ?? new Dictionary<string, string>();
             Tables = tables ?? new Dictionary<string, List<Dictionary<string, string>>>();
             Images = images ?? new Dictionary<string, string>();
+            HeaderImages = new Dictionary<string, string>();
             SpecialCharacters = new Dictionary<string, (string Character, string Font)>();
         }
         
@@ -29,6 +32,7 @@ public struct WordTemplateData
             Placeholders = new Dictionary<string, string>();
             Tables = new Dictionary<string, List<Dictionary<string, string>>>();
             Images = new Dictionary<string, string>();
+            HeaderImages = new Dictionary<string, string>();
             SpecialCharacters = new Dictionary<string, (string Character, string Font)>();
         }
         
@@ -60,6 +64,24 @@ public struct WordTemplateData
         public string GetImage(string key)
         {
             return Images.ContainsKey(key) ? Images[key] : null;
+        }
+        
+        // Method to add a header image
+        public void AddHeaderImage(string key, string imagePath)
+        {
+            HeaderImages[key] = imagePath;
+        }
+        
+        // Method to check if a header image exists
+        public bool HasHeaderImage(string key)
+        {
+            return HeaderImages.ContainsKey(key);
+        }
+        
+        // Method to get a header image path
+        public string GetHeaderImage(string key)
+        {
+            return HeaderImages.ContainsKey(key) ? HeaderImages[key] : null;
         }
         
         // Method to add a table
