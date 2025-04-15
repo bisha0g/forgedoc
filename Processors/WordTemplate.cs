@@ -1746,48 +1746,87 @@ public class WordTemplate
 
         string imageRelationshipId = headerPart.GetIdOfPart(imagePart);
 
-        // Locate the paragraph that contains the image placeholder and replace it with an image
-        
-        
-        var tokenstart = headerPart.RootElement.Descendants<Text>().Where(t =>placeholder.Contains(t.Text) && t.Text.StartsWith("{%")).FirstOrDefault();
-        var tokenend = headerPart.RootElement.Descendants<Text>().Where(t =>placeholder.Contains(t.Text) && t.Text.EndsWith("%}")).FirstOrDefault();
-        var parent = tokenstart.Parent; 
-      //  parent.ReplaceChild(tokenstart, CreateDrawingElement(imageRelationshipId, width, height));
-        // parent.RemoveAllChildren<Text>();
-        parent.AppendChild(CreateDrawingElement(imageRelationshipId, width, height));
-        foreach (var text in parent.Parent.Elements<Text>())
+        try
         {
-            bool end = text.Text.Contains("%}")
-            placeholder.Contains(text.Text)?text.Remove():null;
+            // Find the text element containing the placeholder
+            var textElements = headerPart.RootElement.Descendants<Text>().Where(t => t.Text.Contains(placeholder) || placeholder.Contains(t.Text)).ToList();
             
-            if(end)
-                break;
+            if (textElements.Any())
+            {
+                // Find the first paragraph that contains the placeholder
+                foreach (var paragraph in headerPart.RootElement.Descendants<Paragraph>())
+                {
+                    string paragraphText = GetParagraphText(paragraph);
+                    if (paragraphText.Contains(placeholder))
+                    {
+                        // Clear all existing runs
+                        paragraph.RemoveAllChildren<Run>();
+                        
+                        // Add a new run with the image
+                        var newRun = new Run();
+                        newRun.AppendChild(CreateDrawingElement(imageRelationshipId, width, height));
+                        paragraph.AppendChild(newRun);
+                        break;
+                    }
+                }
+                
+                // Get the first text element that contains the placeholder
+                var textElement = textElements.FirstOrDefault();
+                if (textElement != null)
+                {
+                    // Get the parent run
+                    var run = textElement.Parent as Run;
+                    if (run != null)
+                    {
+                        // Get the parent paragraph
+                        var paragraph = run.Parent as Paragraph;
+                        if (paragraph != null)
+                        {
+                            // Clear the text in the run
+                            textElement.Text = "";
+                            
+                            // Add the image to the run
+                            run.AppendChild(CreateDrawingElement(imageRelationshipId, width, height));
+                            
+                            // Remove any other runs that might contain parts of the placeholder
+                            foreach (var otherRun in paragraph.Elements<Run>().ToList())
+                            {
+                                var otherText = otherRun.GetFirstChild<Text>();
+                                if (otherText != null && otherText != textElement && 
+                                    (otherText.Text.Contains("{%") || otherText.Text.Contains("%}") || 
+                                     placeholder.Contains(otherText.Text)))
+                                {
+                                    // Remove the run that contains part of the placeholder
+                                    otherRun.Remove();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Fallback: Try to find any paragraph that might contain the placeholder
+                foreach (var paragraph in headerPart.RootElement.Descendants<Paragraph>())
+                {
+                    string paragraphText = GetParagraphText(paragraph);
+                    if (paragraphText.Contains(placeholder))
+                    {
+                        // Clear all existing runs
+                        paragraph.RemoveAllChildren<Run>();
+                        
+                        // Add a new run with the image
+                        var newRun = new Run();
+                        newRun.AppendChild(CreateDrawingElement(imageRelationshipId, width, height));
+                        paragraph.AppendChild(newRun);
+                        break;
+                    }
+                }
+            }
         }
-        foreach (var paragraph in headerPart.RootElement.Descendants<Paragraph>())
+        catch (Exception ex)
         {
-            var textElement = paragraph.Elements<Text>().FirstOrDefault(t => placeholder.Contains(t.Text));
-            if (textElement != null)
-            {
-                textElement.Text = textElement.Text =""; // Clear the placeholder text
-                    
-                // // If the text element is now empty, we can add the image to this run
-                // if (string.IsNullOrEmpty(textElement.Text.Trim()))
-                // {
-                //     paragraph.AppendChild(CreateDrawingElement(imageRelationshipId, width, height));
-                // }
-                // else
-                // {
-                //     // If there's still text, create a new run for the image after this one
-                //     var imageRun = new Run();
-                //     imageRun.AppendChild(CreateDrawingElement(imageRelationshipId, width, height));
-                //     paragraph.InsertAt(imageRun, 0);
-                // }
-            }
-            
-            foreach (var run in paragraph.Elements<Run>())
-            {
-          
-            }
+            Console.WriteLine($"Error inserting header image: {ex.Message}");
         }
     }
 
