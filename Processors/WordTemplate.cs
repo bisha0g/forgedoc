@@ -81,6 +81,7 @@ public class WordTemplate
                             ReplacePlaceholdersInPart(footerPart);
                             ProcessTablePlaceholders(footerPart);
                             ProcessImagePlaceholders(footerPart);
+                            ProcessFooterImagePlaceholders(footerPart);
                         }
                     }
                     
@@ -946,6 +947,13 @@ public class WordTemplate
                 return;
             }
             
+            // Check if this paragraph is in a footer or header
+            bool isInFooter = part is FooterPart || paragraph.Ancestors<Footer>().Any();
+            bool isInHeader = part is HeaderPart || paragraph.Ancestors<Header>().Any();
+            bool isInTable = paragraph.Ancestors<TableCell>().Any();
+            
+            Console.WriteLine($"Paragraph context: InFooter={isInFooter}, InHeader={isInHeader}, InTable={isInTable}");
+            
             // Get image dimensions
             int imageWidthEmu;
             int imageHeightEmu;
@@ -1036,8 +1044,26 @@ public class WordTemplate
                 Console.WriteLine("Image data fed to ImagePart");
             }
             
-            // Create the drawing element
-            Drawing drawing = AddImageToAnyWhere(mainPart.Document, mainPart.GetIdOfPart(imagePart), imageWidthEmu, imageHeightEmu, imageType);
+            // Check if this is a footer table image
+            bool isFooterTable = isInFooter && isInTable;
+            Console.WriteLine($"Creating drawing element (isFooterTable: {isFooterTable})");
+            
+            // Create the drawing element using our improved method
+            Drawing drawing;
+            string relationshipId = mainPart.GetIdOfPart(imagePart);
+            
+            if (isFooterTable)
+            {
+                // Use the improved CreateDrawingElement method for footer tables
+                drawing = CreateDrawingElement(relationshipId, imageWidthEmu, imageHeightEmu, true);
+                Console.WriteLine("Created drawing element using CreateDrawingElement with footer table flag");
+            }
+            else
+            {
+                // Use the standard method for other cases
+                drawing = AddImageToAnyWhere(mainPart.Document, relationshipId, imageWidthEmu, imageHeightEmu, imageType);
+            }
+            
             Console.WriteLine("Drawing element created");
             
             // Replace the placeholder text with the image
@@ -1801,6 +1827,120 @@ public class WordTemplate
         }
     }
 
+    private void ProcessFooterImagePlaceholders(FooterPart footerPart)
+    {
+        if (footerPart?.RootElement == null || _data.Images == null || !_data.Images.Any())
+            return;
+
+        Console.WriteLine("Processing footer image placeholders");
+        
+        // Process all tables in the footer first
+        var tables = footerPart.RootElement.Descendants<Table>().ToList();
+        foreach (var table in tables)
+        {
+            Console.WriteLine($"Processing table in footer");
+            
+            // Process each cell in the table
+            foreach (var row in table.Elements<TableRow>().ToList())
+            {
+                foreach (var cell in row.Elements<TableCell>().ToList())
+                {
+                    ProcessCellImagePlaceholders(cell);
+                }
+            }
+        }
+        
+        // Then process paragraphs that are not in tables
+        var paragraphs = footerPart.RootElement.Descendants<Paragraph>().ToList()
+            .Where(p => p.Ancestors<TableCell>().Count() == 0).ToList();
+        
+        foreach (var paragraph in paragraphs)
+        {
+            // Get the text of the paragraph
+            string paragraphText = GetParagraphText(paragraph);
+            
+            // Skip if no text
+            if (string.IsNullOrWhiteSpace(paragraphText)) continue;
+            
+            Console.WriteLine($"Processing footer paragraph text: '{paragraphText}'");
+            
+            // List to store image placeholders found in this paragraph
+            List<string> imagePlaceholders = new List<string>();
+            
+            // Find {% key %} or {% key:widthxheight %} style placeholders
+            var matches = Regex.Matches(paragraphText, @"\{%\s*([^:}\s]+)(?::([\d]+)x([\d]+))?\s*%\}");
+            foreach (Match match in matches)
+            {
+                imagePlaceholders.Add(match.Value);
+                Console.WriteLine($"Found image placeholder in footer: {match.Value}");
+            }
+            
+            // Process each placeholder
+            foreach (string placeholder in imagePlaceholders)
+            {
+                string key = null;
+                int width = 0;
+                int height = 0;
+                
+                // Extract the key and dimensions from the placeholder
+                var match = Regex.Match(placeholder, @"\{%\s*([^:}]+)(?::([\d]+)x([\d]+))?\s*%\}");
+                if (match.Success)
+                {
+                    key = match.Groups[1].Value.Trim();
+                    Console.WriteLine($"Extracted key from footer placeholder: {key}");
+                    
+                    // If dimensions are specified, use them
+                    if (match.Groups.Count > 2 && match.Groups[2].Success && match.Groups[3].Success)
+                    {
+                        if (int.TryParse(match.Groups[2].Value, out int w))
+                            width = w;
+                        
+                        if (int.TryParse(match.Groups[3].Value, out int h))
+                            height = h;
+                        
+                        Console.WriteLine($"Extracted dimensions from footer placeholder: {width}x{height}");
+                    }
+                }
+                
+                // Check if this is a signature placeholder
+                if (key?.Equals("Signature", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    // Look for signature keys in the Images collection
+                    var signatureKeys = _data.Images.Keys
+                        .Where(k => k.StartsWith("Signature_", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    
+                    if (signatureKeys.Any())
+                    {
+                        // Use the first matching signature key found
+                        key = signatureKeys.First();
+                        Console.WriteLine($"Found signature key in footer: {key}");
+                    }
+                }
+                
+                // Skip if no key found or key not in Images
+                if (string.IsNullOrEmpty(key) || !_data.HasImage(key))
+                {
+                    Console.WriteLine($"Key '{key}' not found in Images collection or is empty");
+                    continue;
+                }
+                
+                // Get the image path
+                string imagePath = _data.GetImage(key);
+                if (string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
+                {
+                    Console.WriteLine($"Image path not found or file doesn't exist: {imagePath}");
+                    continue;
+                }
+                
+                Console.WriteLine($"Inserting image in footer from {imagePath} for placeholder {placeholder}");
+                
+                // Insert the image
+                InsertImageInParagraph(footerPart, paragraph, imagePath, placeholder, width, height);
+            }
+        }
+    }
+
     private void InsertImageIntoHeader(HeaderPart headerPart, string imagePath, string placeholder, int width = 990000, int height = 792000)
     {
         if (string.IsNullOrEmpty(imagePath) || !File.Exists(imagePath))
@@ -1922,8 +2062,40 @@ public class WordTemplate
         }
     }
 
-    private Drawing CreateDrawingElement(string relationshipId, int width, int height)
+    private Drawing CreateDrawingElement(string relationshipId, int width, int height, bool isFooterTable = false)
     {
+        // Create a unique ID for the image
+        UInt32Value imageId = new UInt32Value((uint)new Random().Next(1, 1000000));
+        string imageName = $"Image{Guid.NewGuid().ToString().Substring(0, 8)}";
+        
+        if (isFooterTable)
+        {
+            // Simplified drawing for footer tables
+            return new Drawing(
+                new DW.Inline(
+                    new DW.Extent() { Cx = width, Cy = height },
+                    new DW.EffectExtent() { LeftEdge = 0L, TopEdge = 0L, RightEdge = 0L, BottomEdge = 0L },
+                    new DW.DocProperties() { Id = imageId, Name = imageName },
+                    new DW.NonVisualGraphicFrameDrawingProperties(new A.GraphicFrameLocks() { NoChangeAspect = true }),
+                    new A.Graphic(
+                        new A.GraphicData(
+                            new PIC.Picture(
+                                new PIC.NonVisualPictureProperties(
+                                    new PIC.NonVisualDrawingProperties() { Id = imageId, Name = imageName },
+                                    new PIC.NonVisualPictureDrawingProperties()),
+                                new PIC.BlipFill(
+                                    new A.Blip() { Embed = relationshipId },
+                                    new A.Stretch(new A.FillRectangle())),
+                                new PIC.ShapeProperties(
+                                    new A.Transform2D(
+                                        new A.Offset() { X = 0L, Y = 0L },
+                                        new A.Extents() { Cx = width, Cy = height }),
+                                    new A.PresetGeometry(new A.AdjustValueList()) { Preset = A.ShapeTypeValues.Rectangle })))
+                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" }))
+            );
+        }
+        
+        // Standard drawing for other cases
         return new Drawing(
             new DW.Inline(
                 new DW.Extent() { Cx = width, Cy = height },
@@ -1936,8 +2108,8 @@ public class WordTemplate
                 },
                 new DW.DocProperties()
                 {
-                    Id = (UInt32Value)1U,
-                    Name = "Picture 1"
+                    Id = imageId,
+                    Name = imageName
                 },
                 new DW.NonVisualGraphicFrameDrawingProperties(
                     new A.GraphicFrameLocks() { NoChangeAspect = true }),
@@ -1947,22 +2119,12 @@ public class WordTemplate
                             new PIC.NonVisualPictureProperties(
                                 new PIC.NonVisualDrawingProperties()
                                 {
-                                    Id = (UInt32Value)0U,
-                                    Name = "Image"
+                                    Id = imageId,
+                                    Name = imageName
                                 },
                                 new PIC.NonVisualPictureDrawingProperties()),
                             new PIC.BlipFill(
-                                new A.Blip(
-                                    new A.BlipExtensionList(
-                                        new A.BlipExtension()
-                                        {
-                                            Uri = "{28A0092B-C50C-407E-A947-70E740481C1C}"
-                                        })
-                                )
-                                {
-                                    Embed = relationshipId,
-                                    CompressionState = A.BlipCompressionValues.Print
-                                },
+                                new A.Blip() { Embed = relationshipId },
                                 new A.Stretch(
                                     new A.FillRectangle())),
                             new PIC.ShapeProperties(
@@ -1973,16 +2135,15 @@ public class WordTemplate
                                     new A.AdjustValueList()
                                 )
                                 { Preset = A.ShapeTypeValues.Rectangle }))
-                    )
-                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
-            )
-            {
-                DistanceFromTop = (UInt32Value)0U,
-                DistanceFromBottom = (UInt32Value)0U,
-                DistanceFromLeft = (UInt32Value)0U,
-                DistanceFromRight = (UInt32Value)0U,
-                EditId = "50D07946"
-            });
+                )
+                { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
+        )
+        {
+            DistanceFromTop = (UInt32Value)0U,
+            DistanceFromBottom = (UInt32Value)0U,
+            DistanceFromLeft = (UInt32Value)0U,
+            DistanceFromRight = (UInt32Value)0U
+        });
     }
     
     private ImagePartType GetImagePartTypeFromFormat(System.Drawing.Imaging.ImageFormat format)
@@ -2033,13 +2194,14 @@ public class WordTemplate
     
     private Drawing AddImageToAnyWhere(Document mainPartDocument, string getIdOfPart, int imageSizeWidth, int imageSizeHeight, ImagePartType imageType = ImagePartType.Jpeg)
     {
-        // Create a unique ID for the image
-        string imageId = $"image{Guid.NewGuid()}";
+        // Create a unique ID for the image using a random number to ensure uniqueness
+        UInt32Value imageId = new UInt32Value((uint)new Random().Next(1, 1000000));
+        string imageName = $"Image{Guid.NewGuid().ToString().Substring(0, 8)}";
         
         // Determine file extension based on image type
         string fileExtension = GetFileExtensionFromImageType(imageType);
         
-        // Create a new Drawing object
+        // Create a new Drawing object with simplified Blip configuration
         Drawing drawing = new Drawing(
             new DW.Inline(
                 new DW.Extent() { Cx = imageSizeWidth, Cy = imageSizeHeight },
@@ -2052,8 +2214,8 @@ public class WordTemplate
                 },
                 new DW.DocProperties()
                 {
-                    Id = (UInt32Value)1U,
-                    Name = imageId
+                    Id = imageId,
+                    Name = imageName
                 },
                 new DW.NonVisualGraphicFrameDrawingProperties(
                     new A.GraphicFrameLocks() { NoChangeAspect = true }),
@@ -2063,22 +2225,13 @@ public class WordTemplate
                             new PIC.NonVisualPictureProperties(
                                 new PIC.NonVisualDrawingProperties()
                                 {
-                                    Id = (UInt32Value)0U,
-                                    Name = $"{imageId}{fileExtension}"
+                                    Id = imageId,
+                                    Name = $"{imageName}{fileExtension}"
                                 },
                                 new PIC.NonVisualPictureDrawingProperties()),
                             new PIC.BlipFill(
-                                new A.Blip(
-                                    new A.BlipExtensionList(
-                                        new A.BlipExtension()
-                                        {
-                                            Uri = "{28A0092B-C50C-407E-A947-70E740481C1C}"
-                                        })
-                                )
-                                {
-                                    Embed = getIdOfPart,
-                                    CompressionState = A.BlipCompressionValues.Print
-                                },
+                                // Simplified Blip configuration without unnecessary extensions
+                                new A.Blip() { Embed = getIdOfPart },
                                 new A.Stretch(
                                     new A.FillRectangle())),
                             new PIC.ShapeProperties(
@@ -2089,17 +2242,17 @@ public class WordTemplate
                                     new A.AdjustValueList()
                                 )
                                 { Preset = A.ShapeTypeValues.Rectangle }))
-                    )
-                    { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
-            )
-            {
-                DistanceFromTop = (UInt32Value)0U,
-                DistanceFromBottom = (UInt32Value)0U,
-                DistanceFromLeft = (UInt32Value)0U,
-                DistanceFromRight = (UInt32Value)0U,
-                EditId = "50D07946"
-            });
-            
+                )
+                { Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture" })
+        )
+        {
+            DistanceFromTop = (UInt32Value)0U,
+            DistanceFromBottom = (UInt32Value)0U,
+            DistanceFromLeft = (UInt32Value)0U,
+            DistanceFromRight = (UInt32Value)0U
+            // Removed EditId as it's not necessary and can cause issues
+        });
+        
         return drawing;
     }
     
@@ -2204,6 +2357,63 @@ public class WordTemplate
         
         try
         {
+            // Check if paragraph is null or has no parent
+            if (paragraph == null)
+            {
+                Console.WriteLine("Error: Paragraph is null");
+                return;
+            }
+            
+            if (paragraph.Parent == null)
+            {
+                Console.WriteLine("Error: Paragraph parent is null, cannot replace paragraph");
+                return;
+            }
+            
+            // Check if this paragraph is in a footer or table
+            bool isInFooter = paragraph.Ancestors<Footer>().Any();
+            bool isInTable = paragraph.Ancestors<TableCell>().Any();
+            Console.WriteLine($"ReplaceTextWithImage context: InFooter={isInFooter}, InTable={isInTable}");
+            
+            // For footer tables, use a simplified approach with just the image
+            if (isInFooter && isInTable)
+            {
+                Console.WriteLine("Using simplified approach for footer table images");
+                
+                try
+                {
+                    // Create a completely new paragraph with just the image
+                    Paragraph imageParagraph = new Paragraph(new Run(drawing));
+                    
+                    // Copy paragraph properties if they exist
+                    if (paragraph.ParagraphProperties != null)
+                    {
+                        imageParagraph.ParagraphProperties = (ParagraphProperties)paragraph.ParagraphProperties.CloneNode(true);
+                    }
+                    
+                    // Get the parent before modifying anything
+                    OpenXmlElement parent = paragraph.Parent;
+                    
+                    // Safer approach: Insert the new paragraph before the old one, then remove the old one
+                    if (parent != null)
+                    {
+                        parent.InsertBefore(imageParagraph, paragraph);
+                        paragraph.Remove();
+                        Console.WriteLine("Replaced entire paragraph with image-only paragraph in footer table");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Error: Parent became null, cannot replace paragraph");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error replacing paragraph in footer table: {ex.Message}");
+                }
+                return;
+            }
+            
+            // Standard approach for non-footer-table cases
             // Create a completely new paragraph to replace the original one
             Paragraph newParagraph = new Paragraph();
             
@@ -2252,6 +2462,9 @@ public class WordTemplate
                 return;
             }
             
+            // Note: Footer tables are already handled at the beginning of this method
+            
+            // Standard handling for other cases
             // Create text runs for content before and after the placeholder
             if (placeholderIndex > 0)
             {
@@ -2273,9 +2486,27 @@ public class WordTemplate
                 Console.WriteLine($"Added text after placeholder: '{afterText}'");
             }
             
-            // Replace the original paragraph with our new one
-            paragraph.Parent.ReplaceChild(newParagraph, paragraph);
-            Console.WriteLine("Replaced original paragraph with new paragraph containing the image");
+            try
+            {
+                // Get the parent before modifying anything
+                OpenXmlElement parent = paragraph.Parent;
+                
+                if (parent != null)
+                {
+                    // Safer approach: Insert the new paragraph before the old one, then remove the old one
+                    parent.InsertBefore(newParagraph, paragraph);
+                    paragraph.Remove();
+                    Console.WriteLine("Replaced original paragraph with new paragraph containing the image");
+                }
+                else
+                {
+                    Console.WriteLine("Error: Parent became null, cannot replace paragraph");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error replacing paragraph: {ex.Message}");
+            }
         }
         catch (Exception ex)
         {
